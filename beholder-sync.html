@@ -97,6 +97,10 @@ textarea{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resi
   <summary>Settings</summary>
   <label for="yaml">Paste a beholder config.yaml to fill in the boxes below</label>
   <textarea id="yaml" spellcheck="false"></textarea>
+  <div id="datalabChoice" hidden>
+    <label for="datalabName">Datalab to upload to (this page uploads to one)</label>
+    <select id="datalabName"></select>
+  </div>
   <div id="pathChoice" hidden>
     <label for="pathName">Watched path to sync (this page syncs one folder)</label>
     <select id="pathName"></select>
@@ -233,13 +237,23 @@ function compileSettings(s) {
 // ------------------------------------------------------------ config.yaml
 // Maps one watched path of a beholder config.yaml onto the settings boxes.
 // Keys the file leaves out fall back to beholder's own defaults.
-function settingsFromConfig(cfg, pathName) {
+// A datalab's url may be the UI address or the API address, so compare them
+// with any trailing /api removed.
+const serverKey = (url) => String(url || "").trim().replace(/\/+$/, "").replace(/\/api$/, "").toLowerCase();
+function settingsFromConfig(cfg, pathName, datalabName) {
+  const datalabs = cfg.datalabs || [];
   const local = (cfg.watched_paths || []).filter((w) => (w.kind || "local") === "local");
   if (!local.length) throw new Error("the config has no local watched_paths");
-  const wp = local.find((w) => w.name === pathName) || local[0];
-  const datalabs = cfg.datalabs || [];
-  const dl = datalabs.find((d) => d.name === wp.datalab) || (datalabs.length === 1 ? datalabs[0] : null);
-  if (!dl) throw new Error(`watched path ${wp.name} names no datalab the config defines`);
+  // Beholder lets a path leave out `datalab` only when the config has one.
+  const target = (w) => w.datalab ?? (datalabs.length === 1 ? datalabs[0].name : undefined);
+  const usable = datalabs.filter((d) => local.some((w) => target(w) === d.name));
+  if (!usable.length) throw new Error("no local watched path names a datalab the config defines");
+  // The page uploads to one datalab. Unless one is chosen, it takes the one
+  // at DEFAULTS.apiUrl, and the first otherwise.
+  const dl = usable.find((d) => d.name === datalabName)
+    || usable.find((d) => serverKey(d.url) === serverKey(DEFAULTS.apiUrl)) || usable[0];
+  const paths = local.filter((w) => target(w) === dl.name);
+  const wp = paths.find((w) => w.name === pathName) || paths[0];
   const s = {
     apiUrl: dl.url,
     itemType: wp.item_type || "",
@@ -255,7 +269,8 @@ function settingsFromConfig(cfg, pathName) {
   // A missing key means beholder reads DATALAB_API_KEY from the environment.
   // Keep whatever key is already entered rather than blanking it.
   if (dl.api_key && dl.api_key !== "your-api-key-here") s.apiKey = dl.api_key;
-  return { s, wp, names: local.map((w) => w.name) };
+  return { s, wp, dl, names: paths.map((w) => w.name),
+           datalabChoices: usable.map((d) => [d.name, d.url]) };
 }
 
 // Beholder is given the UI address and finds the API from a meta tag in the
@@ -713,9 +728,13 @@ $("save").onclick = async () => {
 $("loadYaml").onclick = async () => {
   try {
     const cfg = jsyaml.load($("yaml").value);
-    const { s, wp, names } = settingsFromConfig(cfg, $("pathName").value);
-    // With several watched paths, the first load takes the first one and
-    // shows a picker. Choosing another and pressing Load again loads it.
+    const { s, wp, dl, names, datalabChoices } =
+      settingsFromConfig(cfg, $("pathName").value, $("datalabName").value);
+    // With several datalabs or watched paths, the first load picks one and
+    // shows a dropdown. Choosing another and pressing Load again loads it.
+    $("datalabName").replaceChildren(...datalabChoices.map(([n, url]) => new Option(`${n} (${url})`, n)));
+    $("datalabName").value = dl.name;
+    $("datalabChoice").hidden = datalabChoices.length < 2;
     $("pathName").replaceChildren(...names.map((n) => new Option(n, n)));
     $("pathName").value = wp.name;
     $("pathChoice").hidden = names.length < 2;
@@ -723,7 +742,7 @@ $("loadYaml").onclick = async () => {
     for (const [k, v] of Object.entries(s)) $(k).value = v;
     compileSettings(readSettings());
     await kvSet("settings", readSettings());
-    log(`loaded watched path ${wp.name} from config.yaml`, "ok");
+    log(`loaded watched path ${wp.name} for datalab ${dl.name} from config.yaml`, "ok");
     status.problem = s.apiKey || $("apiKey").value ? null
       : "The config has no api_key. Enter it in the API key box and Save settings.";
     if ((wp.id_patterns || []).some((p) => p.includes("?P<group_id>"))) {

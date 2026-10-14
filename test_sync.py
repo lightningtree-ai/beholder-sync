@@ -184,6 +184,9 @@ datalabs:
   - name: "mock"
     url: "{base}"
     api_key: "test-key"
+  - name: "theirs"
+    url: "{base}/theirs"
+    api_key: "their-key"
 watched_paths:
   - kind: "local"
     path: "C://Users/Cycler/Desktop/data"
@@ -204,6 +207,11 @@ watched_paths:
     name: "other"
     datalab: "mock"
     include_patterns: ["*.mpr"]
+  - kind: "local"
+    path: "E:/theirs"
+    name: "their-path"
+    datalab: "theirs"
+    include_patterns: ["*.txt"]
 sync:
   metadata_interval: 1200  # seconds (20 minutes)
 """
@@ -256,7 +264,21 @@ def main():
         page.fill("#yaml", CONFIG_YAML.format(base=api_url.removesuffix("/api")))
         page.click("#loadYaml")
         page.wait_for_function("document.querySelector('#apiUrl').value.endsWith('/api')")
-        check("picker lists both watched paths", page.locator("#pathName option").count() == 2)
+        check("datalab dropdown lists both datalabs",
+              page.locator("#datalabName option").count() == 2 and page.is_visible("#datalabChoice"))
+        check("picker lists only the chosen datalab's watched paths",
+              page.locator("#pathName option").all_text_contents() == ["sycamore", "other"],
+              page.locator("#pathName option").all_text_contents())
+        page.select_option("#datalabName", "theirs")
+        page.click("#loadYaml")
+        page.wait_for_function("document.querySelector('#include').value === '*.txt'")
+        check("choosing their datalab loads its path and key",
+              page.locator("#pathName option").all_text_contents() == ["their-path"]
+              and page.input_value("#apiKey") == "their-key" and not page.is_visible("#pathChoice"))
+        page.select_option("#datalabName", "mock")
+        page.click("#loadYaml")
+        page.wait_for_function("document.querySelector('#include').value === '*.ndax'")
+        check("switching back restores our key", page.input_value("#apiKey") == "test-key")
         page.select_option("#pathName", "other")
         page.click("#loadYaml")
         page.wait_for_function("document.querySelector('#include').value === '*.mpr'")
@@ -438,6 +460,20 @@ def main():
         check("matching folder name, any case, gives no warning", hints["right"] is None, hints)
         check("wrong folder name warns", "Desktop" in (hints["wrong"] or "") and "data" in hints["wrong"], hints)
         check("no config path gives no warning", hints["noPath"] is None, hints)
+        picks = page.evaluate("""() => {
+          const cfg = {datalabs: [
+              {name: 'collab', url: 'https://datalab.collab.ac.uk', api_key: 'theirs'},
+              {name: 'lt', url: 'https://datalab.lightningtree.ai', api_key: 'ours'}],
+            watched_paths: [
+              {name: 'a', path: 'C:/a', datalab: 'collab'},
+              {name: 'b', path: 'C:/b', datalab: 'lt'}]};
+          const pick = (d) => { const r = beholder.settingsFromConfig(cfg, '', d); return [r.dl.name, r.wp.name, r.s.apiKey]; };
+          return {byDefault: pick(''), chosen: pick('collab'), unknown: pick('nope')};
+        }""")
+        check("multi-datalab config defaults to datalab.lightningtree.ai",
+              picks["byDefault"] == ["lt", "b", "ours"], picks)
+        check("an explicit datalab choice wins", picks["chosen"] == ["collab", "a", "theirs"], picks)
+        check("an unknown datalab name falls back to the default", picks["unknown"] == ["lt", "b", "ours"], picks)
         check("blank max depth is unlimited", cases["unlimited"] is None or cases["unlimited"] == float("inf"), cases)
 
         check("no page errors", not errors, errors)
