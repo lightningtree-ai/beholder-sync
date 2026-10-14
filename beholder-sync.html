@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beholder Sync</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js"
+        integrity="sha512-CSBhVREyzHAjAFfBlIBakjoRUKp5h7VSweP0InR/pAJyptH7peuhCsqAI/snV+TwZmXZqoUklpXp6R6wMnYf5Q=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<style>
+/* Colours, pills, tiles and tables follow beholder's status dashboard
+   (src/datalab_beholder/server.py), so the two pages read the same. */
+:root{
+  --bg:#f6f7f9; --card:#fff; --ink:#1a1d21; --dim:#6b7280; --line:#e3e6ea;
+  --ok:#177245; --okbg:#e7f4ec; --warn:#8a5a00; --warnbg:#fdf3e0;
+  --bad:#a3231d; --badbg:#fbeceb; --idle:#4b5563; --idlebg:#eef0f3;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#15171a; --card:#1d2024; --ink:#e6e8ea; --dim:#9aa3ad; --line:#2c3036;
+  --ok:#6ee7a8; --okbg:#12301f; --warn:#f0c274; --warnbg:#33270e;
+  --bad:#f29089; --badbg:#3a1a18; --idle:#9aa3ad; --idlebg:#24282d;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+ font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:20px;margin:0;letter-spacing:-.01em}
+h2{font-size:15px;margin:0}
+header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+.sub{color:var(--dim);font-size:12.5px;margin-bottom:20px}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;
+ font-weight:600;background:var(--idlebg);color:var(--idle)}
+.pill.ok{background:var(--okbg);color:var(--ok)}
+.pill.warn{background:var(--warnbg);color:var(--warn)}
+.pill.bad{background:var(--badbg);color:var(--bad)}
+button{font:inherit;font-size:12.5px;font-weight:600;color:var(--ink);
+ background:var(--card);border:1px solid var(--line);border-radius:999px;
+ padding:3px 12px;cursor:pointer}
+button:hover:enabled{border-color:var(--dim)}
+button:disabled{color:var(--dim);cursor:default}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+ padding:16px 18px;margin-bottom:16px}
+.cardhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:2px}
+.path{color:var(--dim);font-size:12.5px;font-family:ui-monospace,SFMono-Regular,
+ Menlo,Consolas,monospace;word-break:break-all;margin-bottom:14px}
+.tiles{display:flex;gap:26px;flex-wrap:wrap;margin-bottom:14px}
+.tile .n{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;
+ letter-spacing:-.02em}
+.tile .l{font-size:11.5px;color:var(--dim);text-transform:uppercase;
+ letter-spacing:.05em}
+.tile.bad .n{color:var(--bad)} .tile.warn .n{color:var(--warn)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:5px 10px 5px 0;border-bottom:1px solid var(--line);
+ vertical-align:top}
+th{font-size:11.5px;color:var(--dim);text-transform:uppercase;
+ letter-spacing:.05em;font-weight:600}
+tr:last-child td{border-bottom:0}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.err{color:var(--bad)} .okc{color:var(--ok)} .warnc{color:var(--warn)}
+.scroll{overflow-x:auto}
+.sec{font-size:11.5px;color:var(--dim);text-transform:uppercase;
+ letter-spacing:.05em;font-weight:600;margin:16px 0 6px}
+.empty{color:var(--dim);font-style:italic}
+.banner{background:var(--badbg);color:var(--bad);border-radius:8px;
+ padding:10px 14px;margin-bottom:16px;font-size:13px}
+.banner.warn{background:var(--warnbg);color:var(--warn)}
+.note{color:var(--warn);font-size:13px;margin:-6px 0 14px}
+summary{cursor:pointer;font-weight:600;font-size:15px}
+label{display:block;font-size:12px;color:var(--dim);margin:10px 0 2px}
+input,textarea,select{width:100%;padding:6px 8px;font:inherit;background:var(--bg);
+ color:var(--ink);border:1px solid var(--line);border-radius:6px}
+textarea{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical}
+#yaml{min-height:140px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0 14px}
+.actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
+#log{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+ max-height:260px;overflow-y:auto;white-space:pre-wrap;margin:0}
+</style>
+</head>
+<body><div class="wrap">
+<header><h1>beholder sync</h1><span id="state" class="pill">not started</span>
+<button id="syncNow" disabled>Sync now</button></header>
+<div class="sub" id="meta">Uploads cycler files from a folder on this computer to datalab while this tab is open.</div>
+<div id="banners"></div>
+
+<div class="card">
+  <div class="cardhead"><h2 id="folderName">No folder chosen</h2></div>
+  <div class="path" id="folderHint">Choose the folder the cycler writes its data to.</div>
+  <div id="body"></div>
+  <div class="actions">
+    <button id="pick">Choose folder</button>
+    <button id="resume" hidden>Resume access to folder</button>
+  </div>
+</div>
+
+<details class="card" id="settings">
+  <summary>Settings</summary>
+  <label for="yaml">Paste a beholder config.yaml to fill in the boxes below</label>
+  <textarea id="yaml" spellcheck="false"></textarea>
+  <div id="pathChoice" hidden>
+    <label for="pathName">Watched path to sync (this page syncs one folder)</label>
+    <select id="pathName"></select>
+  </div>
+  <div class="actions"><button id="loadYaml">Load config</button></div>
+  <div class="grid">
+    <div><label for="apiUrl">datalab API URL</label><input id="apiUrl"></div>
+    <div><label for="apiKey">API key</label><input id="apiKey" type="password" autocomplete="off"></div>
+    <div><label for="itemType">Item type for new items</label><input id="itemType"></div>
+    <div><label for="intervalMin">Minutes between syncs</label><input id="intervalMin" type="number" min="1"></div>
+    <div><label for="include">Include patterns (comma separated)</label><input id="include"></div>
+    <div><label for="exclude">Exclude patterns (comma separated)</label><input id="exclude"></div>
+    <div><label for="idPattern">Item ID regexes, one per line (named group <code>item_id</code>)</label><textarea id="idPattern" rows="1" spellcheck="false"></textarea></div>
+    <div><label for="itemTemplate">Item ID template</label><input id="itemTemplate"></div>
+    <div><label for="collectionTemplate">Collection ID template (blank for none)</label><input id="collectionTemplate"></div>
+    <div><label for="blockPatterns">Block patterns (<code>glob=blocktype</code>, comma separated)</label><input id="blockPatterns"></div>
+    <div><label for="maxDepth">Max folder depth (blank for unlimited)</label><input id="maxDepth" type="number" min="0"></div>
+  </div>
+  <div class="actions"><button id="save">Save settings</button></div>
+</details>
+
+<details class="card">
+  <summary>Log</summary>
+  <div class="sec">Newest first, cleared when the tab closes</div>
+  <pre id="log"></pre>
+</details>
+<div class="sub" id="foot"></div>
+</div>
+
+<script>
+// Defaults for a new browser. Edit these before sending the page to a
+// collaborator, so they only have to paste the API key and pick the folder.
+const DEFAULTS = {
+  apiUrl: "https://datalab.lightningtree.ai/api",
+  apiKey: "",
+  itemType: "cells",
+  intervalMin: 10,
+  include: "*.ndax",
+  exclude: "",
+  idPattern: ".*(?P<item_id>CEL-[0-9]{3,5}).*",
+  itemTemplate: "{item_id}",
+  collectionTemplate: "",
+  blockPatterns: "*.ndax=cycle",
+  maxDepth: 10,
+};
+const FIELDS = Object.keys(DEFAULTS);
+const MAX_BACKOFF_MIN = 60;
+
+// ---------------------------------------------------------------- storage
+// One IndexedDB database. "kv" holds settings and the folder handle; "files"
+// holds one row per matched file, keyed by its path relative to the folder.
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("beholder-sync", 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore("kv");
+      req.result.createObjectStore("files", { keyPath: "path" });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+const dbp = openDb();
+async function tx(store, mode, fn) {
+  const db = await dbp;
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(store, mode);
+    const out = fn(t.objectStore(store));
+    t.oncomplete = () => resolve(out && "result" in out ? out.result : out);
+    t.onerror = () => reject(t.error);
+    // A quota or internal failure aborts without an error event.
+    t.onabort = () => reject(t.error || new Error("storage transaction aborted"));
+  });
+}
+const kvGet = (k) => tx("kv", "readonly", (s) => s.get(k));
+const kvSet = (k, v) => tx("kv", "readwrite", (s) => s.put(v, k));
+const filesAll = () => tx("files", "readonly", (s) => s.getAll());
+const filePut = (row) => tx("files", "readwrite", (s) => s.put(row));
+const fileDel = (path) => tx("files", "readwrite", (s) => s.delete(path));
+
+// --------------------------------------------------------------- matching
+// Same semantics as beholder: globs match the basename case-insensitively
+// (the cycler PCs are Windows), the ID regex is searched in the relative
+// path, and templates use Python str.format field syntax.
+function globToRegex(glob) {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") re += ".*";
+    else if (c === "?") re += ".";
+    else if (c === "[") {
+      // As fnmatch: a "]" straight after "[" or "[!" is a member, not the end.
+      let j = i + 1;
+      if (glob[j] === "!") j++;
+      if (glob[j] === "]") j++;
+      j = glob.indexOf("]", j);
+      if (j < 0) { re += "\\["; continue; }
+      let body = glob.slice(i + 1, j).replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+      if (body[0] === "!") body = "^" + body.slice(1);
+      else if (body[0] === "^") body = "\\" + body;
+      re += "[" + body + "]";
+      i = j;
+    } else re += c.replace(/[.+^${}()|\\]/g, "\\$&");
+  }
+  return new RegExp("^" + re + "$", "is");
+}
+const splitList = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
+// Python's (?P<name>...) and (?P=name) become JavaScript's (?<name>...) and \k<name>.
+const pyRegex = (s) => new RegExp(s.replace(/\(\?P</g, "(?<").replace(/\(\?P=(\w+)\)/g, "\\k<$1>"));
+function renderTemplate(tpl, groups) {
+  return tpl.replace(/\{\{|\}\}|\{(\w+)\}/g, (m, name) => {
+    if (m === "{{") return "{";
+    if (m === "}}") return "}";
+    if (!Object.hasOwn(groups, name)) throw new Error(`template field {${name}} has no capture group`);
+    return groups[name];
+  });
+}
+
+function compileSettings(s) {
+  return {
+    ...s,
+    apiUrl: s.apiUrl.replace(/\/+$/, ""),
+    include: splitList(s.include || "*").map(globToRegex),
+    exclude: splitList(s.exclude).map(globToRegex),
+    idPatterns: s.idPattern.split("\n").map((x) => x.trim()).filter(Boolean).map(pyRegex),
+    blocks: splitList(s.blockPatterns).map((p) => {
+      const [glob, type] = p.split("=").map((x) => x.trim());
+      return { re: globToRegex(glob), type };
+    }),
+    maxDepth: String(s.maxDepth).trim() === "" ? Infinity : Number(s.maxDepth),
+  };
+}
+
+// ------------------------------------------------------------ config.yaml
+// Maps one watched path of a beholder config.yaml onto the settings boxes.
+// Keys the file leaves out fall back to beholder's own defaults.
+function settingsFromConfig(cfg, pathName) {
+  const local = (cfg.watched_paths || []).filter((w) => (w.kind || "local") === "local");
+  if (!local.length) throw new Error("the config has no local watched_paths");
+  const wp = local.find((w) => w.name === pathName) || local[0];
+  const datalabs = cfg.datalabs || [];
+  const dl = datalabs.find((d) => d.name === wp.datalab) || (datalabs.length === 1 ? datalabs[0] : null);
+  if (!dl) throw new Error(`watched path ${wp.name} names no datalab the config defines`);
+  const s = {
+    apiUrl: dl.url,
+    itemType: wp.item_type || "",
+    intervalMin: Math.max(1, Math.round((cfg.sync?.metadata_interval ?? 1200) / 60)),
+    include: (wp.include_patterns || ["*"]).join(", "),
+    exclude: (wp.exclude_patterns || []).join(", "),
+    idPattern: (wp.id_patterns || []).join("\n"),
+    itemTemplate: wp.item_id_template || "",
+    collectionTemplate: wp.collection_id_template || "",
+    blockPatterns: Object.entries(wp.block_patterns || {}).map(([g, t]) => `${g}=${t}`).join(", "),
+    maxDepth: wp.max_depth === null ? "" : String(wp.max_depth ?? 10),
+  };
+  // A missing key means beholder reads DATALAB_API_KEY from the environment.
+  // Keep whatever key is already entered rather than blanking it.
+  if (dl.api_key && dl.api_key !== "your-api-key-here") s.apiKey = dl.api_key;
+  return { s, wp, names: local.map((w) => w.name) };
+}
+
+// Beholder is given the UI address and finds the API from a meta tag in the
+// page. The UI page sends no CORS headers, so a browser cannot read it.
+// Instead try the address itself and then /api, and keep whichever answers
+// /info with JSON.
+async function resolveApiUrl(url) {
+  const base = url.replace(/\/+$/, "");
+  const candidates = /\/api$/.test(base) ? [base] : [base, base + "/api"];
+  for (const c of candidates) {
+    try {
+      const res = await fetch(c + "/info");
+      if (res.ok && (res.headers.get("content-type") || "").includes("json")) return c;
+    } catch { /* blocked or unreachable, try the next one */ }
+  }
+  log(`could not reach ${base}; assuming the API is at ${candidates.at(-1)}`, "warn");
+  return candidates.at(-1);
+}
+
+// Returns {item_id, collection_id} for a relative path, or null to skip it.
+function idsFor(cfg, relPath) {
+  let groups = {};
+  if (cfg.idPatterns.length) {
+    const m = cfg.idPatterns.map((re) => re.exec(relPath)).find(Boolean);
+    if (!m) return null;
+    for (const [k, v] of Object.entries(m.groups || {})) if (v !== undefined) groups[k] = v;
+  }
+  try {
+    const ids = { ...groups };
+    if (cfg.itemTemplate) ids.item_id = renderTemplate(cfg.itemTemplate, groups);
+    if (cfg.collectionTemplate) ids.collection_id = renderTemplate(cfg.collectionTemplate, groups);
+    return ids.item_id ? ids : null;
+  } catch (e) {
+    log(`skip ${relPath}: ${e.message}`, "warn");
+    return null;
+  }
+}
+
+// ------------------------------------------------------------------- scan
+async function* walk(dir, cfg, prefix = "", depth = 0) {
+  for await (const [name, handle] of dir.entries()) {
+    if (cfg.exclude.some((re) => re.test(name))) continue;
+    const rel = prefix + name;
+    if (handle.kind === "directory") {
+      if (depth < cfg.maxDepth) yield* walk(handle, cfg, rel + "/", depth + 1);
+    } else if (cfg.include.some((re) => re.test(name))) {
+      yield [rel, handle];
+    }
+  }
+}
+
+// Reconciles the folder with the stored rows. A file is pending when its
+// size or modified time differs from the last version that reached datalab.
+// Files that pass the include patterns but yield no item ID are counted, not
+// stored: they can never upload, and the count is what explains that.
+async function scan(root, cfg) {
+  const rows = new Map((await filesAll()).map((r) => [r.path, r]));
+  const seen = new Map();
+  // Files that exist but could not be read this pass, for example while the
+  // cycler holds them open. Their rows are kept so their sync state survives.
+  const unreadable = new Set();
+  let unattachable = 0;
+  for await (const [rel, handle] of walk(root, cfg)) {
+    const ids = idsFor(cfg, rel);
+    if (!ids) { unattachable++; continue; }
+    let file;
+    try { file = await handle.getFile(); }
+    catch (e) { log(`cannot read ${rel}: ${e.message}`, "warn"); unreadable.add(rel); continue; }
+    const old = rows.get(rel);
+    const row = { attempts: 0, nextTry: 0, ...old, path: rel, size: file.size, mtime: file.lastModified,
+                  itemId: ids.item_id, collectionId: ids.collection_id || null };
+    if (row.size !== old?.size || row.mtime !== old?.mtime) { row.attempts = 0; row.nextTry = 0; }
+    if (!old || row.size !== old.size || row.mtime !== old.mtime
+        || row.itemId !== old.itemId || row.collectionId !== old.collectionId) await filePut(row);
+    seen.set(rel, { row, handle });
+  }
+  for (const path of rows.keys()) if (!seen.has(path) && !unreadable.has(path)) await fileDel(path);
+  if (unattachable) log(`${unattachable} file(s) have no item ID and cannot be uploaded; check the Item ID regexes`, "warn");
+  return { seen, unattachable };
+}
+const isPending = (r) => r.size !== r.syncedSize || r.mtime !== r.syncedMtime;
+
+// -------------------------------------------------------------------- api
+// Same endpoints and payloads as datalab-api's DatalabClient, which the
+// Python beholder uses.
+class ApiError extends Error {
+  constructor(msg, status) { super(msg); this.status = status; }
+}
+async function api(cfg, method, path, { json, form, ok = [200] } = {}) {
+  const headers = { "DATALAB-API-KEY": cfg.apiKey };
+  let body;
+  if (json !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(json); }
+  if (form) body = form;
+  // A fetch that throws means the request never got an answer. It carries
+  // no status, so callers treat it as transient.
+  const res = await fetch(cfg.apiUrl + path, { method, headers, body });
+  const text = await res.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { /* non-JSON body */ }
+  if (!ok.includes(res.status)) {
+    throw new ApiError(`HTTP ${res.status} at ${path}: ${data.message || text.slice(0, 200)}`, res.status);
+  }
+  return { status: res.status, data };
+}
+
+async function fetchItem(cfg, itemId) {
+  try {
+    const { data } = await api(cfg, "GET", `/get-item-data/${encodeURIComponent(itemId)}`);
+    const item = data.item_data;
+    const shown = new Set(item.display_order || []);
+    item.blocks_obj = Object.fromEntries(
+      Object.entries(item.blocks_obj || {}).filter(([id]) => shown.has(id)));
+    return item;
+  } catch (e) {
+    if (e.status === 404) return null;
+    throw e;
+  }
+}
+
+async function collectionRef(cfg, collectionId) {
+  const get = async () =>
+    (await api(cfg, "GET", `/collections/${encodeURIComponent(collectionId)}`)).data.data.immutable_id;
+  try { return await get(); }
+  catch (e) {
+    // Only a missing collection is created. A refused key or a server error is not "missing".
+    if (e.status !== 404) throw e;
+    await api(cfg, "PUT", "/collections",
+      { json: { data: { collection_id: collectionId, type: "collections" } }, ok: [201] });
+    return await get();
+  }
+}
+
+async function ensureItem(cfg, itemId, collectionId) {
+  const item = await fetchItem(cfg, itemId);
+  if (item) return item;
+  if (!cfg.itemType) throw new Error(`item ${itemId} does not exist and no item type is set`);
+  log(`creating item ${itemId} (type ${cfg.itemType}${collectionId ? `, collection ${collectionId}` : ""})`);
+  const sample = { item_id: itemId, type: cfg.itemType };
+  if (collectionId) sample.collections = [{ immutable_id: await collectionRef(cfg, collectionId) }];
+  await api(cfg, "POST", "/new-sample/",
+    { json: { new_sample_data: sample, generate_id_automatically: false }, ok: [201] });
+  return { files: [], blocks_obj: {} };
+}
+
+// Matches on original_name first because the server's `name` is
+// secure_filename(original_name), which turns spaces into underscores.
+function existingFileId(item, filename) {
+  const target = filename.toLowerCase();
+  for (const f of item.files || []) {
+    for (const key of ["original_name", "name"]) {
+      if (f[key] && f[key].toLowerCase() === target) return f.immutable_id || null;
+    }
+  }
+  return null;
+}
+
+async function upload(cfg, itemId, file, replaceId) {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  form.append("item_id", itemId);
+  if (replaceId) form.append("replace_file", replaceId);
+  const { status, data } = await api(cfg, "POST", "/upload-file/", { form, ok: [201, 304] });
+  // 304: the server compared hashes and already holds this content.
+  if (status === 304) return { file_id: replaceId, not_modified: true };
+  return { ...data, not_modified: false };
+}
+
+async function createBlock(cfg, itemId, blockType, fileId) {
+  const { data } = await api(cfg, "POST", "/add-data-block/",
+    { json: { item_id: itemId, block_type: blockType, index: null } });
+  const block = { ...data.new_block_obj, file_id: fileId };
+  await api(cfg, "POST", "/update-block/",
+    { json: { block_data: block, block_type: blockType, save_to_db: true }, ok: [200, 202] });
+}
+
+// ------------------------------------------------------------------- sync
+async function attachPending(cfg, seen) {
+  const now = Date.now();
+  const due = [...seen.values()].filter(({ row }) => isPending(row) && row.nextTry <= now);
+  // With nothing to send no request is made, so an old outage no longer applies.
+  if (!due.length) { status.serverError = null; return; }
+
+  // A server outage is not each file's fault, so it costs no attempts.
+  try { await api(cfg, "GET", "/info"); status.serverError = null; }
+  catch (e) {
+    status.serverError = e.message;
+    log(`datalab unreachable, leaving ${due.length} file(s) pending: ${e.message}`, "warn");
+    return;
+  }
+
+  log(`attaching ${due.length} file(s)`);
+  const items = new Map();
+  for (const { row, handle } of due) {
+    try {
+      if (!items.has(row.itemId)) items.set(row.itemId, await ensureItem(cfg, row.itemId, row.collectionId));
+      const item = items.get(row.itemId);
+      const file = await handle.getFile();
+      const replaceId = existingFileId(item, file.name);
+      const result = await upload(cfg, row.itemId, file, replaceId);
+      // The item is cached for the pass, so record the new file on it. A second
+      // file of the same name for this item then replaces it instead of duplicating it.
+      if (!replaceId && result.file_id) {
+        item.files = [...(item.files || []), { original_name: file.name, immutable_id: result.file_id }];
+      }
+
+      // Marked synced as soon as the bytes are on the server, so a failed
+      // block step never causes a re-upload.
+      Object.assign(row, { syncedSize: file.size, syncedMtime: file.lastModified,
+                           size: file.size, mtime: file.lastModified,
+                           attempts: 0, nextTry: 0, lastError: null, lastErrorAt: null,
+                           lastSynced: Date.now() });
+      await filePut(row);
+      log(result.not_modified ? `${row.path} already up to date on ${row.itemId}`
+        : `attached ${row.path} -> ${row.itemId}${replaceId ? " (replaced)" : ""}`, "ok");
+
+      const block = cfg.blocks.find((b) => b.re.test(file.name));
+      const fileId = result.file_id;
+      const hasBlock = Object.values(item.blocks_obj || {})
+        .some((b) => b.blocktype === block?.type && b.file_id === fileId);
+      if (block && fileId && !hasBlock) {
+        try {
+          await createBlock(cfg, row.itemId, block.type, fileId);
+          item.blocks_obj = { ...item.blocks_obj, [`new-${fileId}`]: { blocktype: block.type, file_id: fileId } };
+          log(`created ${block.type} block on ${row.itemId} for ${row.path}`, "ok");
+        } catch (e) {
+          log(`could not create ${block.type} block on ${row.itemId}: ${e.message}`, "bad");
+        }
+      }
+    } catch (e) {
+      row.attempts = (row.attempts || 0) + 1;
+      row.nextTry = Date.now() + Math.min(MAX_BACKOFF_MIN, 2 ** (row.attempts - 1)) * 60_000;
+      row.lastError = e.message;
+      row.lastErrorAt = Date.now();
+      await filePut(row);
+      log(`failed ${row.path}: ${e.message}`, "bad");
+    }
+  }
+}
+
+// ---------------------------------------------------------------- page glue
+const $ = (id) => document.getElementById(id);
+let root = null;
+let timer = null;
+// What the page knows beyond the stored rows. `problem` is a banner about
+// setup (no key, no folder access); `serverError` is the last failed /info.
+const status = { syncing: false, problem: null, serverError: null, unattachable: 0,
+                 lastPassAt: null, nextAt: null, unsupported: false };
+
+function log(msg, cls = "") {
+  const line = document.createElement("div");
+  line.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
+  if (cls) line.className = { ok: "okc", warn: "warnc", bad: "err" }[cls] || "";
+  $("log").prepend(line);
+  while ($("log").childElementCount > 500) $("log").lastChild.remove();
+}
+function setProblem(text) { status.problem = text; render(); }
+
+async function loadSettings() {
+  const saved = (await kvGet("settings")) || {};
+  const s = { ...DEFAULTS, ...saved };
+  for (const k of FIELDS) $(k).value = s[k];
+  return s;
+}
+function readSettings() {
+  return Object.fromEntries(FIELDS.map((k) => [k, $(k).value.trim()]));
+}
+
+// The formatting helpers are the dashboard's, taking milliseconds here
+// because that is what Date and File report.
+function ago(t) {
+  if (!t) return "never";
+  const d = (Date.now() - t) / 1000;
+  const a = Math.abs(d), f = d < 0 ? "in " : "", s = d < 0 ? "" : " ago";
+  let v;
+  if (a < 45) v = Math.round(a) + "s";
+  else if (a < 3600) v = Math.round(a / 60) + " min";
+  else if (a < 86400) v = (a / 3600).toFixed(1) + " h";
+  else v = (a / 86400).toFixed(1) + " d";
+  return f + v + s;
+}
+const T = (t) => t ? `<span title="${new Date(t).toLocaleString()}">${ago(t)}</span>` : '<span class="empty">never</span>';
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const bytes = (n) => n == null ? "" :
+  n < 1024 ? n + " B" :
+  n < 1048576 ? (n / 1024).toFixed(0) + " KB" :
+  n < 1073741824 ? (n / 1048576).toFixed(1) + " MB" : (n / 1073741824).toFixed(2) + " GB";
+const tile = (n, label, cls) =>
+  `<div class="tile ${cls || ""}"><div class="n">${n}</div><div class="l">${label}</div></div>`;
+
+async function render() {
+  const rows = await filesAll();
+  const pending = rows.filter(isPending);
+  const stuck = pending.filter((r) => r.attempts > 0)
+    .sort((a, b) => b.attempts - a.attempts || (b.lastErrorAt || 0) - (a.lastErrorAt || 0));
+  const recent = rows.filter((r) => r.lastSynced).sort((a, b) => b.lastSynced - a.lastSynced).slice(0, 10);
+  const lastUpload = recent[0]?.lastSynced;
+
+  const pill = $("state");
+  if (status.unsupported) { pill.className = "pill bad"; pill.textContent = "unsupported browser"; }
+  else if (!root) { pill.className = "pill"; pill.textContent = "not started"; }
+  else if (status.syncing) { pill.className = "pill"; pill.textContent = "syncing"; }
+  else if (status.serverError) { pill.className = "pill bad"; pill.textContent = "datalab unreachable"; }
+  else if (stuck.length) { pill.className = "pill warn"; pill.textContent = stuck.length + " stuck"; }
+  else { pill.className = "pill ok"; pill.textContent = "running"; }
+  $("syncNow").disabled = !root || status.syncing;
+  $("syncNow").textContent = status.syncing ? "syncing" : "Sync now";
+
+  const bits = [];
+  const host = (() => { try { return new URL($("apiUrl").value).host; } catch { return ""; } })();
+  if (host) bits.push(esc(host));
+  if (root && status.nextAt) bits.push("next sync " + ago(status.nextAt));
+  if (status.lastPassAt) bits.push("last sync " + ago(status.lastPassAt));
+  bits.push("runs only while this tab is open");
+  $("meta").innerHTML = bits.join(" &middot; ");
+
+  let b = "";
+  if (status.unsupported) b += `<div class="banner">This browser cannot read folders. Open this page in Chrome or Edge.</div>`;
+  if (status.problem) b += `<div class="banner warn">${esc(status.problem)}</div>`;
+  if (status.serverError) b += `<div class="banner">datalab did not answer on the last sync, so no
+    files were uploaded and none were counted as failed: ${esc(status.serverError)}</div>`;
+  $("banners").innerHTML = b;
+
+  let h = `<div class="tiles">
+    ${tile(rows.length - pending.length, "synced")}
+    ${tile(pending.length, "pending", pending.length ? "warn" : "")}
+    ${tile(stuck.length, "stuck", stuck.length ? "bad" : "")}
+    ${tile(status.unattachable, "no item_id", status.unattachable ? "warn" : "")}
+    <div class="tile"><div class="n" style="font-size:15px;padding-top:6px">${T(lastUpload)}</div>
+      <div class="l">last upload</div></div>
+  </div>`;
+  if (status.unattachable) {
+    h += `<div class="note">${status.unattachable} file(s) match the include patterns but no
+      Item ID regex, so they will never upload. Check the regexes in Settings.</div>`;
+  }
+  if (stuck.length) {
+    // No deadline on a file that is still failing means Sync now cleared
+    // its backoff, so it goes on the next pass.
+    h += `<div class="sec">Not uploading</div><div class="scroll"><table>
+      <tr><th>File</th><th>Item</th><th>Attempts</th><th>Last failure</th><th>Next try</th><th>Error</th></tr>`;
+    for (const r of stuck) {
+      h += `<tr><td class="mono">${esc(r.path)}</td><td class="mono">${esc(r.itemId)}</td>
+        <td class="mono">${r.attempts}</td><td>${T(r.lastErrorAt)}</td>
+        <td>${r.nextTry > Date.now() ? T(r.nextTry) : "next pass"}</td>
+        <td class="err mono">${esc(r.lastError)}</td></tr>`;
+    }
+    h += `</table></div>`;
+  }
+  if (recent.length) {
+    h += `<div class="sec">Recently uploaded</div><div class="scroll"><table>
+      <tr><th>File</th><th>Item</th><th>Size</th><th>When</th></tr>`;
+    for (const r of recent) {
+      h += `<tr><td class="mono">${esc(r.path)}</td><td class="mono">${esc(r.itemId)}</td>
+        <td class="mono">${bytes(r.syncedSize)}</td><td>${T(r.lastSynced)}</td></tr>`;
+    }
+    h += `</table></div>`;
+  }
+  $("body").innerHTML = root || rows.length ? h : "";
+  $("foot").textContent = "updated " + new Date().toLocaleTimeString();
+}
+
+// `now` is the Sync now button. Like the dashboard's, it also clears the
+// backoff on failing files so they are retried on this pass.
+async function syncOnce({ now = false } = {}) {
+  if (!root) return;
+  // Two open tabs would upload every file twice. The lock lets one sync at a time.
+  await navigator.locks.request("beholder-sync", { ifAvailable: true }, async (lock) => {
+    if (!lock) { log("another tab is syncing, skipped this run", "warn"); return; }
+    // A half-typed regex in Settings would otherwise throw out of the timer unseen.
+    let cfg;
+    try { cfg = compileSettings(readSettings()); }
+    catch (e) { setProblem(`Sync skipped, the settings are invalid: ${e.message}`); return; }
+    if (!cfg.apiKey) { setProblem("Enter the API key in Settings, then Save settings."); return; }
+    status.problem = null;
+    status.syncing = true;
+    await render();
+    try {
+      if (now) {
+        for (const r of await filesAll()) if (r.nextTry) await filePut({ ...r, nextTry: 0 });
+      }
+      const { seen, unattachable } = await scan(root, cfg);
+      status.unattachable = unattachable;
+      await attachPending(cfg, seen);
+      status.lastPassAt = Date.now();
+    } catch (e) {
+      log(`sync failed: ${e.message}`, "bad");
+      status.problem = `The last sync stopped with an error: ${e.message}`;
+    } finally {
+      status.syncing = false;
+    }
+    await render();
+  });
+}
+
+function schedule() {
+  clearInterval(timer);
+  const ms = Math.max(1, Number($("intervalMin").value) || DEFAULTS.intervalMin) * 60_000;
+  status.nextAt = Date.now() + ms;
+  timer = setInterval(() => { status.nextAt = Date.now() + ms; syncOnce(); }, ms);
+}
+
+async function useFolder(handle) {
+  root = handle;
+  $("folderName").textContent = handle.name || "Chosen folder";
+  $("folderHint").textContent = "Watching this folder and everything inside it.";
+  $("pick").textContent = "Choose a different folder";
+  $("resume").hidden = true;
+  status.problem = null;
+  schedule();
+  await syncOnce();
+}
+
+$("pick").onclick = async () => {
+  let handle;
+  try { handle = await window.showDirectoryPicker({ id: "beholder-sync", mode: "read" }); }
+  catch (e) { if (e.name !== "AbortError") setProblem(`Could not open the folder: ${e.message}`); return; }
+  await kvSet("folder", handle);
+  await useFolder(handle);
+};
+$("resume").onclick = async () => {
+  const handle = await kvGet("folder");
+  if ((await handle.requestPermission({ mode: "read" })) === "granted") await useFolder(handle);
+};
+$("syncNow").onclick = () => syncOnce({ now: true });
+$("save").onclick = async () => {
+  const s = readSettings();
+  try { compileSettings(s); } catch (e) { setProblem(`Settings not saved: ${e.message}`); return; }
+  await kvSet("settings", s);
+  log("settings saved");
+  status.problem = null;
+  if (root) schedule();
+  await render();
+};
+$("loadYaml").onclick = async () => {
+  try {
+    const cfg = jsyaml.load($("yaml").value);
+    const { s, wp, names } = settingsFromConfig(cfg, $("pathName").value);
+    // With several watched paths, the first load takes the first one and
+    // shows a picker. Choosing another and pressing Load again loads it.
+    $("pathName").replaceChildren(...names.map((n) => new Option(n, n)));
+    $("pathName").value = wp.name;
+    $("pathChoice").hidden = names.length < 2;
+    s.apiUrl = await resolveApiUrl(s.apiUrl);
+    for (const [k, v] of Object.entries(s)) $(k).value = v;
+    compileSettings(readSettings());
+    await kvSet("settings", readSettings());
+    log(`loaded watched path ${wp.name} from config.yaml`, "ok");
+    status.problem = s.apiKey || $("apiKey").value ? null
+      : "The config has no api_key. Enter it in the API key box and Save settings.";
+    if ((wp.id_patterns || []).some((p) => p.includes("?P<group_id>"))) {
+      log("this page does not share new items with a group_id; set sharing in datalab", "warn");
+    }
+    if (!root) $("folderHint").textContent = `Choose the folder that matches ${wp.path} on this computer.`;
+    if (root) schedule();
+    await render();
+  } catch (e) {
+    setProblem(`Config not loaded: ${e.message}`);
+  }
+};
+
+(async () => {
+  const s = await loadSettings();
+  $("settings").open = !s.apiKey;
+  // Keeps the "ago" times current between syncs, as the dashboard's poll does.
+  setInterval(render, 15_000);
+  if (!window.showDirectoryPicker) {
+    status.unsupported = true;
+    $("pick").disabled = true;
+    await render();
+    return;
+  }
+  await render();
+  const handle = await kvGet("folder");
+  if (!handle) return;
+  // The grant survives a restart only if the user chose "Allow on every visit".
+  if ((await handle.queryPermission({ mode: "read" })) === "granted") await useFolder(handle);
+  else {
+    $("folderName").textContent = handle.name;
+    $("folderHint").textContent = "Chrome needs your permission again before it can read this folder.";
+    $("resume").hidden = false;
+    setProblem("Click Resume access to folder to continue syncing.");
+  }
+})();
+// Exposed for the test harness, which drives a sync against a folder it builds.
+window.beholder = { useFolder, syncOnce, filesAll, compileSettings, idsFor, globToRegex, settingsFromConfig };
+</script>
+</body>
+</html>
