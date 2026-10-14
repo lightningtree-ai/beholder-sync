@@ -7,7 +7,8 @@ The page runs in Chrome or Edge and syncs while its tab is open.
 
 ## Running it
 
-1. Download `beholder-sync.html` and open it in Chrome or Edge.
+1. Open https://lightningtree-ai.github.io/beholder-sync/beholder-sync.html in Chrome or Edge.
+   Opening a downloaded copy of `beholder-sync.html` from disk also loads, but folder access from a local file has not been tested.
 2. Open **Settings**. Paste a beholder `config.yaml` into the top box and click **Load config**, or fill in the boxes by hand.
    Get an API key from `<your datalab URL>/get-api-key` if the config has none.
 3. Click **Choose folder** and pick the folder your cycler writes to.
@@ -41,6 +42,7 @@ A pass where datalab does not answer at all leaves files pending without countin
 - Chrome and Edge only. Firefox and Safari cannot read folders.
 - One watched path per tab. With several in the config, a dropdown picks which one.
 - The API key is stored unencrypted in the browser's storage for that page. Anyone who can use the browser can read it. Use a key belonging to the person whose PC it is.
+- Every GitHub Pages site under `lightningtree-ai.github.io` shares that storage. Do not turn on Pages for another repo in this organisation until the page has a domain of its own.
 - New items are not shared with a group. Beholder does this when an ID regex captures `group_id`. The page logs a warning instead.
 - Files are not checked for being mid-write. A file the cycler is still writing is uploaded and then replaced on a later pass, as beholder does.
 - Do not point the page and a running beholder at the same folder. Both would upload the same files.
