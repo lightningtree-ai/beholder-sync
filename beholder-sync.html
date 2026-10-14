@@ -501,7 +501,7 @@ let root = null;
 let timer = null;
 // What the page knows beyond the stored rows. `problem` is a banner about
 // setup (no key, no folder access); `serverError` is the last failed /info.
-const status = { syncing: false, problem: null, serverError: null, unattachable: 0,
+const status = { syncing: false, problem: null, folderWarning: null, serverError: null, unattachable: 0,
                  lastPassAt: null, nextAt: null, unsupported: false };
 
 function log(msg, cls = "") {
@@ -575,6 +575,7 @@ async function render() {
   let b = "";
   if (status.unsupported) b += `<div class="banner">This browser cannot read folders. Open this page in Chrome or Edge.</div>`;
   if (status.problem) b += `<div class="banner warn">${esc(status.problem)}</div>`;
+  if (status.folderWarning) b += `<div class="banner warn">${esc(status.folderWarning)}</div>`;
   if (status.serverError) b += `<div class="banner">datalab did not answer on the last sync, so no
     files were uploaded and none were counted as failed: ${esc(status.serverError)}</div>`;
   $("banners").innerHTML = b;
@@ -657,8 +658,25 @@ function schedule() {
   timer = setInterval(() => { status.nextAt = Date.now() + ms; syncOnce(); }, ms);
 }
 
+// A page cannot open a folder by its path. From the config's path it can
+// still start the dialog in a well-known folder on the way there, and check
+// that the folder picked has the name the config expects.
+const WELL_KNOWN = ["desktop", "documents", "downloads", "music", "pictures", "videos"];
+function folderHints(path) {
+  const parts = String(path || "").split(/[\\/]+/).filter(Boolean);
+  const startIn = parts.map((x) => x.toLowerCase()).findLast((x) => WELL_KNOWN.includes(x));
+  return { startIn, expected: parts.length > 1 ? parts.at(-1) : null };
+}
+function folderWarning(name, path) {
+  const { expected } = folderHints(path);
+  if (!expected || !name || name.toLowerCase() === expected.toLowerCase()) return null;
+  return `You chose the folder "${name}", but the config watches "${expected}" (${path}). ` +
+    "If that is not the folder the cycler writes to, click Choose a different folder.";
+}
+
 async function useFolder(handle) {
   root = handle;
+  status.folderWarning = folderWarning(handle.name, await kvGet("configPath"));
   $("folderName").textContent = handle.name || "Chosen folder";
   $("folderHint").textContent = "Watching this folder and everything inside it.";
   $("pick").textContent = "Choose a different folder";
@@ -670,7 +688,10 @@ async function useFolder(handle) {
 
 $("pick").onclick = async () => {
   let handle;
-  try { handle = await window.showDirectoryPicker({ id: "beholder-sync", mode: "read" }); }
+  // The browser remembers the last folder picked under this id, and that
+  // takes precedence over startIn after the first pick.
+  const { startIn } = folderHints(await kvGet("configPath"));
+  try { handle = await window.showDirectoryPicker({ id: "beholder-sync", mode: "read", ...(startIn && { startIn }) }); }
   catch (e) { if (e.name !== "AbortError") setProblem(`Could not open the folder: ${e.message}`); return; }
   await kvSet("folder", handle);
   await useFolder(handle);
@@ -708,7 +729,9 @@ $("loadYaml").onclick = async () => {
     if ((wp.id_patterns || []).some((p) => p.includes("?P<group_id>"))) {
       log("this page does not share new items with a group_id; set sharing in datalab", "warn");
     }
-    if (!root) $("folderHint").textContent = `Choose the folder that matches ${wp.path} on this computer.`;
+    await kvSet("configPath", wp.path);
+    if (root) status.folderWarning = folderWarning(root.name, wp.path);
+    else $("folderHint").textContent = `Choose the folder that matches ${wp.path} on this computer.`;
     if (root) schedule();
     await render();
   } catch (e) {
@@ -740,7 +763,7 @@ $("loadYaml").onclick = async () => {
   }
 })();
 // Exposed for the test harness, which drives a sync against a folder it builds.
-window.beholder = { useFolder, syncOnce, filesAll, compileSettings, idsFor, globToRegex, settingsFromConfig };
+window.beholder = { useFolder, syncOnce, filesAll, compileSettings, idsFor, globToRegex, settingsFromConfig, folderHints, folderWarning };
 </script>
 </body>
 </html>

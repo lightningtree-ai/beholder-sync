@@ -421,6 +421,23 @@ def main():
         check("greedy regex takes the last ID in the path", cases["lastRun"] == "CEL-0042", cases)
         check("no match gives no item", cases["none"] is None, cases)
         check("second regex line is tried", cases["second"] == "BAT-77", cases)
+        hints = page.evaluate(r"""() => ({
+          sycamore: beholder.folderHints('C://Users/Cycler/Desktop/data'),
+          backslash: beholder.folderHints(String.raw`C:\Users\x\Documents\runs\2026`),
+          plain: beholder.folderHints('D:/cycler'),
+          right: beholder.folderWarning('DATA', 'C://Users/Cycler/Desktop/data'),
+          wrong: beholder.folderWarning('Desktop', 'C://Users/Cycler/Desktop/data'),
+          noPath: beholder.folderWarning('anything', undefined),
+        })""")
+        check("picker starts on the Desktop for the sycamore path",
+              hints["sycamore"] == {"startIn": "desktop", "expected": "data"}, hints)
+        check("Windows backslash paths parse",
+              hints["backslash"] == {"startIn": "documents", "expected": "2026"}, hints)
+        check("no well-known folder gives no startIn", "startIn" not in hints["plain"]
+              or hints["plain"]["startIn"] is None, hints)
+        check("matching folder name, any case, gives no warning", hints["right"] is None, hints)
+        check("wrong folder name warns", "Desktop" in (hints["wrong"] or "") and "data" in hints["wrong"], hints)
+        check("no config path gives no warning", hints["noPath"] is None, hints)
         check("blank max depth is unlimited", cases["unlimited"] is None or cases["unlimited"] == float("inf"), cases)
 
         check("no page errors", not errors, errors)
