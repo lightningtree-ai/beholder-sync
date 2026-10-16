@@ -208,10 +208,14 @@ watched_paths:
     block_patterns:
        "*.ndax": "cycle"
   - kind: "local"
-    path: "D:/other"
-    name: "other"
+    path: "D:/eis"
+    name: "eis"
     datalab: "mock"
+    item_type: "cells"
     include_patterns: ["*.mpr"]
+    id_patterns: [".*(?P<item_id>CEL-[0-9]{{3,5}}).*"]
+    item_id_template: "{{item_id}}"
+    block_patterns: {{"*.mpr": "eis"}}
   - kind: "local"
     path: "E:/theirs"
     name: "their-path"
@@ -234,6 +238,36 @@ WRITE_FILES = """async ([files, remove]) => {
     const fh = await d.getFileHandle(parts.at(-1), {create: true});
     const w = await fh.createWritable(); await w.write(text); await w.close();
   }
+}"""
+
+
+# The database as version 1 of the page left it: flat settings and one
+# synced file. It also held the folder handle, which this leaves out:
+# headless Chromium closes the page that reads back a stored handle to the
+# origin-private file system.
+V1_SETUP = """async (apiUrl) => {
+  const root = await navigator.storage.getDirectory();
+  const fh = await root.getFileHandle('CEL-0009.ndax', {create: true});
+  const w = await fh.createWritable(); await w.write('old'); await w.close();
+  const f = await fh.getFile();
+  const db = await new Promise((res, rej) => {
+    const r = indexedDB.open('beholder-sync', 1);
+    r.onupgradeneeded = () => {
+      r.result.createObjectStore('kv');
+      r.result.createObjectStore('files', {keyPath: 'path'});
+    };
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+  const t = db.transaction(['kv', 'files'], 'readwrite');
+  t.objectStore('kv').put({apiUrl, apiKey: 'test-key', itemType: 'cells', intervalMin: 10,
+    include: '*.ndax', exclude: '', idPattern: '.*(?P<item_id>CEL-[0-9]{3,5}).*',
+    itemTemplate: '{item_id}', collectionTemplate: '', blockPatterns: '', maxDepth: 10}, 'settings');
+  t.objectStore('kv').put('C:/x/data', 'configPath');
+  t.objectStore('files').put({path: 'CEL-0009.ndax', size: f.size, mtime: f.lastModified,
+    syncedSize: f.size, syncedMtime: f.lastModified, itemId: 'CEL-0009', collectionId: null,
+    attempts: 0, nextTry: 0, lastSynced: Date.now()});
+  await new Promise((res) => { t.oncomplete = res; });
+  db.close();
 }"""
 
 
@@ -263,41 +297,59 @@ def main():
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(page_url)
 
+        def card(name):
+            return page.locator(f'.watch[data-name="{name}"]')
+
+        def cards():
+            return page.evaluate("[...document.querySelectorAll('.watch')].map((c) => c.dataset.name)")
+
+        def wait_cards(names):
+            page.wait_for_function(
+                "(n) => [...document.querySelectorAll('.watch')].map((c) => c.dataset.name).join() === n",
+                arg=",".join(names))
+
+        def boxes():
+            out = {k: page.input_value(f"#{k}") for k in ["apiUrl", "apiKey", "intervalMin"]}
+            for k in ["itemType", "include", "idPattern", "itemTemplate", "collectionTemplate",
+                      "blockPatterns", "maxDepth"]:
+                out[k] = card("sycamore").locator(f"[name={k}]").input_value()
+            return out
+
         # 0. Settings come from a pasted config.yaml. Its url is the UI
         # address, as in a real config, so the page has to find /api itself.
-        # The second watched path proves the picker loads the one chosen.
+        # Every local path for the chosen datalab gets a card of its own.
         page.fill("#yaml", CONFIG_YAML.format(base=api_url.removesuffix("/api")))
         page.click("#loadYaml")
         page.wait_for_function("document.querySelector('#apiUrl').value.endsWith('/api')")
         check("datalab dropdown lists both datalabs",
               page.locator("#datalabName option").count() == 2 and page.is_visible("#datalabChoice"))
-        check("picker lists only the chosen datalab's watched paths",
-              page.locator("#pathName option").all_text_contents() == ["sycamore", "other"],
-              page.locator("#pathName option").all_text_contents())
+        wait_cards(["sycamore", "eis"])
+        check("one card per watched path of the chosen datalab", cards() == ["sycamore", "eis"], cards())
         page.select_option("#datalabName", "theirs")
         page.click("#loadYaml")
-        page.wait_for_function("document.querySelector('#include').value === '*.txt'")
+        wait_cards(["their-path"])
         check("choosing their datalab loads its path and key",
-              page.locator("#pathName option").all_text_contents() == ["their-path"]
-              and page.input_value("#apiKey") == "their-key" and not page.is_visible("#pathChoice"))
+              page.input_value("#apiKey") == "their-key", page.input_value("#apiKey"))
         page.select_option("#datalabName", "mock")
         page.click("#loadYaml")
-        page.wait_for_function("document.querySelector('#include').value === '*.ndax'")
+        wait_cards(["sycamore", "eis"])
         check("switching back restores our key", page.input_value("#apiKey") == "test-key")
-        page.select_option("#pathName", "other")
-        page.click("#loadYaml")
-        page.wait_for_function("document.querySelector('#include').value === '*.mpr'")
-        page.select_option("#pathName", "sycamore")
-        page.click("#loadYaml")
-        page.wait_for_function("document.querySelector('#include').value === '*.ndax'")
-        got = {k: page.input_value(f"#{k}") for k in
-               ["apiUrl", "apiKey", "itemType", "intervalMin", "idPattern", "itemTemplate",
-                "collectionTemplate", "blockPatterns", "maxDepth"]}
+        got = boxes()
         check("config fills every box", got == {
             "apiUrl": api_url, "apiKey": "test-key", "itemType": "cells", "intervalMin": "20",
+            "include": "*.ndax",
             "idPattern": ".*(?P<item_id>CEL-[0-9]{3,5}).*", "itemTemplate": "{item_id}",
             "collectionTemplate": "APC-P2", "blockPatterns": "*.ndax=cycle", "maxDepth": "10",
         }, got)
+        page.fill("#apiUrl", "datalab.example.org")
+        page.click("#save")
+        page.wait_for_function("document.querySelector('#banners').innerText.includes('not saved')")
+        check("Save settings refuses a URL without a scheme",
+              page.evaluate("beholder.settings().apiUrl") == api_url, page.inner_text("#banners"))
+        page.fill("#apiUrl", api_url)
+        eis_rules = card("eis").locator(".rules").inner_text()
+        check("each card shows its own rules", "*.mpr" in eis_rules and "*.mpr → eis" in eis_rules
+              and "*.ndax" not in eis_rules, eis_rules)
 
         # A Windows path pasted into double quotes breaks the YAML. The rest
         # of the config still loads, and the banner names the line and the fix.
@@ -310,8 +362,7 @@ def main():
         page.wait_for_function("document.querySelector('#banners').innerText.includes('single quotes')")
         banner = page.inner_text("#banners")
         check("bad line names itself in the banner", f"line {bad_line} (unknown escape sequence)" in banner, banner)
-        check("bad line leaves the other boxes filled",
-              {k: page.input_value(f"#{k}") for k in got} == got)
+        check("bad line leaves the other boxes filled", boxes() == got, boxes())
         lenient = page.evaluate("(t) => beholder.loadYamlLenient(t)",
                                 good_yaml.replace("C://Users/Cycler", r"C:\Users\Cycler"))
         check("bad \\U escape skips only its line",
@@ -322,33 +373,61 @@ def main():
         page.click("#loadYaml")
         page.wait_for_function("document.querySelector('#banners').innerText === ''")
 
+        # A regex the browser cannot compile stops the load before anything changes.
+        page.fill("#yaml", good_yaml.replace('id_patterns: [".*(?P<item_id>CEL-[0-9]{3,5}).*"]',
+                                             'id_patterns: ["(?i)(?P<item_id>CEL-[0-9]+)"]'))
+        page.click("#loadYaml")
+        page.wait_for_function("document.querySelector('#banners').innerText.includes('not loaded')")
+        check("config with an unusable regex is refused and names its path",
+              "watched path eis" in page.inner_text("#banners") and cards() == ["sycamore", "eis"],
+              page.inner_text("#banners"))
+        page.fill("#yaml", good_yaml)
+        page.click("#loadYaml")
+        page.wait_for_function("document.querySelector('#banners').innerText === ''")
+
+        card("sycamore").locator(".edit summary").click()
+        card("sycamore").locator("[name=name]").fill("")
+        card("sycamore").locator("[data-act=save]").click()
+        page.wait_for_function("document.querySelector('#banners').innerText.includes('needs a name')")
+        check("a path cannot be saved without a name", cards() == ["sycamore", "eis"], cards())
+        card("sycamore").locator("[name=name]").fill("sycamore")
+        card("sycamore").locator(".edit summary").click()
+
         # BEHOLDER_CONFIG=path/to/config.yaml checks that a real config maps
         # too. Only the mapping runs, so no request reaches its server.
         if real := os.environ.get("BEHOLDER_CONFIG"):
             mapped = page.evaluate(
-                "(t) => beholder.settingsFromConfig(jsyaml.load(t)).s",
+                "(t) => beholder.settingsFromConfig(jsyaml.load(t))",
                 Path(real).read_text(errors="replace"))
-            check("BEHOLDER_CONFIG maps", bool(mapped["apiUrl"]) and bool(mapped["idPattern"]),
-                  {k: v for k, v in mapped.items() if k != "apiKey"})
+            check("BEHOLDER_CONFIG maps", bool(mapped["s"]["apiUrl"])
+                  and all(w["idPattern"] for w in mapped["watches"]), mapped["watches"])
 
         def write(files, remove=()):
             page.evaluate(WRITE_FILES, [files, list(remove)])
 
+        # sycamore watches the whole test folder, eis its subfolder "eis".
         def sync():
             MOCK.calls.clear()
-            page.evaluate("async () => { await beholder.useFolder(await navigator.storage.getDirectory()) }")
+            page.evaluate("""async () => { await beholder.useFolder(beholder.watchId('sycamore'),
+                                                                 await navigator.storage.getDirectory()) }""")
 
-        def tiles():
-            return dict(zip(page.locator(".tile .l").all_text_contents()[:4],
-                            page.locator(".tile .n").all_inner_texts()[:4]))
+        def tiles(name="sycamore"):
+            c = card(name)
+            return dict(zip(c.locator(".tile .l").all_text_contents()[:4],
+                            c.locator(".tile .n").all_inner_texts()[:4]))
 
         def pill():
             return page.inner_text("#state")
 
-        def rows():
-            return {r["path"]: r for r in page.evaluate("beholder.filesAll()")}
+        def rows(name="sycamore"):
+            wid = page.evaluate("(n) => beholder.watchId(n)", name)
+            return {r["path"]: r for r in page.evaluate("beholder.filesAll()") if r["watch"] == wid}
 
         # 1. First sync: create items and collection, upload, add blocks.
+        write({"eis/CEL-0003 eis.mpr": "e1"})
+        page.evaluate("""async () => { const root = await navigator.storage.getDirectory();
+          await beholder.useFolder(beholder.watchId('eis'), await root.getDirectoryHandle('eis'), {sync: false}) }""")
+        check("a path without a folder shows in the header pill", pill() == "1 path not syncing", pill())
         write({
             "CEL-001 run a.ndax": "a1",
             "sub/CEL-001_b.ndax": "b1",
@@ -357,17 +436,23 @@ def main():
             "no-id.ndax": "ignored, no item id",
         })
         sync()
-        check("creates both items", set(MOCK.items) == {"CEL-001", "CEL-0002"}, list(MOCK.items))
+        check("creates the items of both paths", set(MOCK.items) == {"CEL-001", "CEL-0002", "CEL-0003"},
+              list(MOCK.items))
         check("creates the collection once", list(MOCK.collections) == ["APC-P2"])
-        check("links items to the collection",
-              all(i["collections"] for i in MOCK.items.values()))
+        check("links sycamore's items to its collection, and eis's to none",
+              MOCK.items["CEL-001"]["collections"] and MOCK.items["CEL-0002"]["collections"]
+              and not MOCK.items["CEL-0003"]["collections"])
         check("item type is cells", all(i["type"] == "cells" for i in MOCK.items.values()))
-        check("uploads three files", len(uploads()) == 3, len(uploads()))
+        check("one pass uploads both paths' files", len(uploads()) == 4, len(uploads()))
+        check("one /info check for the whole pass", MOCK.calls.count(("GET", "/info")) == 1, MOCK.calls)
         check("CEL-001 has two files", len(MOCK.items["CEL-001"]["files"]) == 2)
         blocks = [b for i in MOCK.items.values() for b in i["blocks_obj"].values()]
-        check("one cycle block per file, each wired to its file",
-              len(blocks) == 3 and all(b["blocktype"] == "cycle" and b.get("file_id") for b in blocks),
-              blocks)
+        check("one block per file of its path's type, each wired to its file",
+              sorted(b["blocktype"] for b in blocks) == ["cycle"] * 3 + ["eis"]
+              and all(b.get("file_id") for b in blocks), blocks)
+        check("each path keeps its own rows", set(rows("eis")) == {"CEL-0003 eis.mpr"}, rows("eis"))
+        check("each card counts its own files",
+              tiles("eis") == {"synced": "1", "pending": "0", "stuck": "0", "no item_id": "0"}, tiles("eis"))
         check("ignores non-matching files", set(rows()) == {
             "CEL-001 run a.ndax", "sub/CEL-001_b.ndax", "deep/er/CEL-0002/test.ndax"}, list(rows()))
         check("all rows synced", all(r["syncedSize"] == r["size"] for r in rows().values()))
@@ -375,9 +460,8 @@ def main():
               tiles() == {"synced": "3", "pending": "0", "stuck": "0", "no item_id": "1"}, tiles())
         check("status: pill says running", pill() == "running", pill())
         check("status: recently uploaded lists three files",
-              page.locator("text=Recently uploaded").count() == 1
-              and page.locator("#body table").last.locator("tr").count() == 4)
-        check("status: no-item_id note explains itself", "never upload" in page.inner_text("#body"))
+              card("sycamore").locator("table.recent tr").count() == 4)
+        check("status: no-item_id note explains itself", "never upload" in card("sycamore").inner_text())
 
         # 2. Nothing changed: no uploads, no server lookups beyond nothing.
         sync()
@@ -427,8 +511,9 @@ def main():
         check("status: stuck file is listed with its error",
               pill() == "1 stuck" and tiles()["stuck"] == "1"
               and "deep/er/CEL-0002/test.ndax" in page.inner_text("text=Not uploading >> xpath=following-sibling::div[1]")
-              and "HTTP 500" in page.inner_text("#body") and page.inner_text("#banners") == "",
-              (pill(), tiles(), page.inner_text("#body")))
+              and "HTTP 500" in card("sycamore").inner_text() and page.inner_text("#banners") == ""
+              and card("eis").locator(".pill").inner_text() == "watching",
+              (pill(), tiles(), card("sycamore").inner_text()))
         if os.environ.get("SHOT"):  # a picture of the status card with one file stuck
             page.screenshot(path=os.environ["SHOT"], full_page=True)
         # Sync now clears the backoff, as the dashboard's button does.
@@ -451,6 +536,27 @@ def main():
         write({}, remove=["sub/CEL-001_b.ndax"])
         sync()
         check("deleted file is forgotten", "sub/CEL-001_b.ndax" not in rows())
+
+        # 7a. A config that renames a path and moves its folder path still
+        # keeps its folder and rows, because the folder chosen has the name
+        # the new path ends in. This is how a path set up by hand carries over.
+        page.fill("#yaml", good_yaml.replace('name: "eis"', 'name: "potentiostat"')
+                  .replace('path: "D:/eis"', 'path: "F:/lab/eis"'))
+        page.click("#loadYaml")
+        wait_cards(["sycamore", "potentiostat"])
+        page.wait_for_function("""document.querySelector('.watch[data-name="potentiostat"] .pill')
+                                  ?.textContent === 'watching'""")
+        check("a renamed path keeps its folder and rows by the folder's name",
+              set(rows("potentiostat")) == {"CEL-0003 eis.mpr"}, rows("potentiostat"))
+
+        # 7b. Removing a path forgets its rows and card and leaves the others.
+        page.once("dialog", lambda d: d.accept())
+        card("potentiostat").locator(".edit summary").click()
+        card("potentiostat").locator("[data-act=remove]").click()
+        wait_cards(["sycamore"])
+        check("removed path loses its rows, others keep theirs",
+              not any(r["watch"] != page.evaluate("beholder.watchId('sycamore')")
+                      for r in page.evaluate("beholder.filesAll()")) and len(rows()) == 2, rows())
 
         # 8. Matching semantics shared with the Python beholder.
         cases = page.evaluate("""() => {
@@ -495,7 +601,7 @@ def main():
             watched_paths: [
               {name: 'a', path: 'C:/a', datalab: 'collab'},
               {name: 'b', path: 'C:/b', datalab: 'lt'}]};
-          const pick = (d) => { const r = beholder.settingsFromConfig(cfg, '', d); return [r.dl.name, r.wp.name, r.s.apiKey]; };
+          const pick = (d) => { const r = beholder.settingsFromConfig(cfg, d); return [r.dl.name, r.watches[0].name, r.s.apiKey]; };
           return {byDefault: pick(''), chosen: pick('collab'), unknown: pick('nope')};
         }""")
         check("multi-datalab config defaults to datalab.lightningtree.ai",
@@ -503,6 +609,26 @@ def main():
         check("an explicit datalab choice wins", picks["chosen"] == ["collab", "a", "theirs"], picks)
         check("an unknown datalab name falls back to the default", picks["unknown"] == ["lt", "b", "ours"], picks)
         check("blank max depth is unlimited", cases["unlimited"] is None or cases["unlimited"] == float("inf"), cases)
+
+        # 9. A browser set up when the page watched one folder keeps that
+        # folder and its rows, so nothing uploads again. The old database is
+        # built from another page of the same origin, in a fresh context.
+        MOCK.calls.clear()
+        origin = f"http://localhost:{page_srv.server_port}"
+        old = browser.new_context().new_page()
+        old.on("pageerror", lambda e: errors.append(str(e)))
+        old.goto(origin + "/no-such-page")  # a 404 page, but on the right origin
+        old.evaluate(V1_SETUP, api_url)
+        old.goto(origin + "/beholder-sync.html")
+        old.wait_for_selector(".watch .tile")
+        check("version 1 rows and config path carry over",
+              old.locator(".watch .tile .n").first.inner_text() == "1"
+              and "config path C:/x/data" in old.locator(".watch .path").inner_text(),
+              old.locator(".watch").inner_text())
+        old.evaluate("async () => { await beholder.useFolder('default', await navigator.storage.getDirectory()) }")
+        check("version 1 files do not upload again",
+              old.inner_text("#state") == "running" and uploads() == [] and "CEL-0009" not in MOCK.items,
+              (old.inner_text("#state"), uploads()))
 
         check("no page errors", not errors, errors)
         browser.close()

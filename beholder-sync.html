@@ -73,6 +73,11 @@ textarea{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resi
 #yaml{min-height:140px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0 14px}
 .actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
+.rules{display:grid;grid-template-columns:max-content 1fr;gap:1px 12px;margin:0 0 14px;font-size:12.5px}
+.rules dt{color:var(--dim)} .rules dd{margin:0;word-break:break-all}
+.edit{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+.edit summary{font-size:12.5px;color:var(--dim)}
+label input,label textarea{margin-top:2px} label input{font-size:14px}
 #log{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
  max-height:260px;overflow-y:auto;white-space:pre-wrap;margin:0}
 </style>
@@ -83,41 +88,22 @@ textarea{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resi
 <div class="sub" id="meta">Uploads cycler files from a folder on this computer to datalab while this tab is open.</div>
 <div id="banners"></div>
 
-<div class="card">
-  <div class="cardhead"><h2 id="folderName">No folder chosen</h2></div>
-  <div class="path" id="folderHint">Choose the folder the cycler writes its data to.</div>
-  <div id="body"></div>
-  <div class="actions">
-    <button id="pick">Choose folder</button>
-    <button id="resume" hidden>Resume access to folder</button>
-  </div>
-</div>
+<div id="watches"></div>
+<div class="actions" style="margin:-4px 0 16px"><button id="addWatch">Add watched path</button></div>
 
 <details class="card" id="settings">
-  <summary>Settings</summary>
-  <label for="yaml">Paste a beholder config.yaml to fill in the boxes below</label>
+  <summary>Datalab settings</summary>
+  <label for="yaml">Paste a beholder config.yaml to set up the datalab and every watched path</label>
   <textarea id="yaml" spellcheck="false"></textarea>
   <div id="datalabChoice" hidden>
     <label for="datalabName">Datalab to upload to (this page uploads to one)</label>
     <select id="datalabName"></select>
   </div>
-  <div id="pathChoice" hidden>
-    <label for="pathName">Watched path to sync (this page syncs one folder)</label>
-    <select id="pathName"></select>
-  </div>
   <div class="actions"><button id="loadYaml">Load config</button></div>
   <div class="grid">
     <div><label for="apiUrl">datalab API URL</label><input id="apiUrl"></div>
     <div><label for="apiKey">API key</label><input id="apiKey" type="password" autocomplete="off"></div>
-    <div><label for="itemType">Item type for new items</label><input id="itemType"></div>
     <div><label for="intervalMin">Minutes between syncs</label><input id="intervalMin" type="number" min="1"></div>
-    <div><label for="include">Include patterns (comma separated)</label><input id="include"></div>
-    <div><label for="exclude">Exclude patterns (comma separated)</label><input id="exclude"></div>
-    <div><label for="idPattern">Item ID regexes, one per line (named group <code>item_id</code>)</label><textarea id="idPattern" rows="1" spellcheck="false"></textarea></div>
-    <div><label for="itemTemplate">Item ID template</label><input id="itemTemplate"></div>
-    <div><label for="collectionTemplate">Collection ID template (blank for none)</label><input id="collectionTemplate"></div>
-    <div><label for="blockPatterns">Block patterns (<code>glob=blocktype</code>, comma separated)</label><input id="blockPatterns"></div>
-    <div><label for="maxDepth">Max folder depth (blank for unlimited)</label><input id="maxDepth" type="number" min="0"></div>
   </div>
   <div class="actions"><button id="save">Save settings</button></div>
 </details>
@@ -136,8 +122,14 @@ textarea{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resi
 const DEFAULTS = {
   apiUrl: "https://datalab.lightningtree.ai/api",
   apiKey: "",
-  itemType: "cells",
   intervalMin: 10,
+};
+// The patterns of a new watched path. Each path is one entry of beholder's
+// watched_paths: a folder and the rules for the files in it.
+const DEFAULT_WATCH = {
+  name: "cycler",
+  path: "",
+  itemType: "cells",
   include: "*.ndax",
   exclude: "",
   idPattern: ".*(?P<item_id>CEL-[0-9]{3,5}).*",
@@ -147,17 +139,29 @@ const DEFAULTS = {
   maxDepth: 10,
 };
 const FIELDS = Object.keys(DEFAULTS);
+const WATCH_FIELDS = Object.keys(DEFAULT_WATCH);
 const MAX_BACKOFF_MIN = 60;
 
 // ---------------------------------------------------------------- storage
-// One IndexedDB database. "kv" holds settings and the folder handle; "files"
-// holds one row per matched file, keyed by its path relative to the folder.
+// One IndexedDB database. "kv" holds the settings, the watched paths and one
+// folder handle per path under "folder:<id>". "rows" holds one row per
+// matched file, keyed by its path's id and its path relative to the folder.
 function openDb() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open("beholder-sync", 1);
-    req.onupgradeneeded = () => {
-      req.result.createObjectStore("kv");
-      req.result.createObjectStore("files", { keyPath: "path" });
+    const req = indexedDB.open("beholder-sync", 2);
+    req.onupgradeneeded = (ev) => {
+      const db = req.result;
+      if (ev.oldVersion < 1) db.createObjectStore("kv");
+      if (ev.oldVersion >= 2) return;
+      const rows = db.createObjectStore("rows", { keyPath: ["watch", "path"] });
+      // Version 1 watched one folder. Its rows move to the path "default",
+      // which loadState makes from the old settings.
+      if (ev.oldVersion === 1) {
+        req.transaction.objectStore("files").getAll().onsuccess = (e) => {
+          for (const r of e.target.result) rows.put({ ...r, watch: "default" });
+          db.deleteObjectStore("files");
+        };
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -177,9 +181,14 @@ async function tx(store, mode, fn) {
 }
 const kvGet = (k) => tx("kv", "readonly", (s) => s.get(k));
 const kvSet = (k, v) => tx("kv", "readwrite", (s) => s.put(v, k));
-const filesAll = () => tx("files", "readonly", (s) => s.getAll());
-const filePut = (row) => tx("files", "readwrite", (s) => s.put(row));
-const fileDel = (path) => tx("files", "readwrite", (s) => s.delete(path));
+const kvDel = (k) => tx("kv", "readwrite", (s) => s.delete(k));
+// [id] sorts before every [id, path], and an array sorts after every string.
+const ofWatch = (id) => IDBKeyRange.bound([id], [id, []]);
+const filesAll = () => tx("rows", "readonly", (s) => s.getAll());
+const filesOf = (id) => tx("rows", "readonly", (s) => s.getAll(ofWatch(id)));
+const filePut = (row) => tx("rows", "readwrite", (s) => s.put(row));
+const fileDel = (id, path) => tx("rows", "readwrite", (s) => s.delete([id, path]));
+const filesDrop = (id) => tx("rows", "readwrite", (s) => s.delete(ofWatch(id)));
 
 // --------------------------------------------------------------- matching
 // Same semantics as beholder: globs match the basename case-insensitively
@@ -235,12 +244,13 @@ function compileSettings(s) {
 }
 
 // ------------------------------------------------------------ config.yaml
-// Maps one watched path of a beholder config.yaml onto the settings boxes.
+// Maps a beholder config.yaml onto the datalab settings and one watched path
+// per local path that uploads to the chosen datalab.
 // Keys the file leaves out fall back to beholder's own defaults.
 // A datalab's url may be the UI address or the API address, so compare them
 // with any trailing /api removed.
 const serverKey = (url) => String(url || "").trim().replace(/\/+$/, "").replace(/\/api$/, "").toLowerCase();
-function settingsFromConfig(cfg, pathName, datalabName) {
+function settingsFromConfig(cfg, datalabName) {
   const datalabs = cfg.datalabs || [];
   const local = (cfg.watched_paths || []).filter((w) => (w.kind || "local") === "local");
   if (!local.length) throw new Error("the config has no local watched_paths");
@@ -253,11 +263,17 @@ function settingsFromConfig(cfg, pathName, datalabName) {
   const dl = usable.find((d) => d.name === datalabName)
     || usable.find((d) => serverKey(d.url) === serverKey(DEFAULTS.apiUrl)) || usable[0];
   const paths = local.filter((w) => target(w) === dl.name);
-  const wp = paths.find((w) => w.name === pathName) || paths[0];
   const s = {
     apiUrl: dl.url,
-    itemType: wp.item_type || "",
     intervalMin: Math.max(1, Math.round((cfg.sync?.metadata_interval ?? 1200) / 60)),
+  };
+  // A missing key means beholder reads DATALAB_API_KEY from the environment.
+  // Keep whatever key is already entered rather than blanking it.
+  if (dl.api_key && dl.api_key !== "your-api-key-here") s.apiKey = dl.api_key;
+  const watches = paths.map((wp, i) => ({
+    name: wp.name || `path ${i + 1}`,
+    path: wp.path || "",
+    itemType: wp.item_type || "",
     include: (wp.include_patterns || ["*"]).join(", "),
     exclude: (wp.exclude_patterns || []).join(", "),
     idPattern: (wp.id_patterns || []).join("\n"),
@@ -265,12 +281,8 @@ function settingsFromConfig(cfg, pathName, datalabName) {
     collectionTemplate: wp.collection_id_template || "",
     blockPatterns: Object.entries(wp.block_patterns || {}).map(([g, t]) => `${g}=${t}`).join(", "),
     maxDepth: wp.max_depth === null ? "" : String(wp.max_depth ?? 10),
-  };
-  // A missing key means beholder reads DATALAB_API_KEY from the environment.
-  // Keep whatever key is already entered rather than blanking it.
-  if (dl.api_key && dl.api_key !== "your-api-key-here") s.apiKey = dl.api_key;
-  return { s, wp, dl, names: paths.map((w) => w.name),
-           datalabChoices: usable.map((d) => [d.name, d.url]) };
+  }));
+  return { s, dl, paths, watches, datalabChoices: usable.map((d) => [d.name, d.url]) };
 }
 
 // Parses a config.yaml that may hold a few bad lines, so the rest still loads.
@@ -324,7 +336,7 @@ function idsFor(cfg, relPath) {
     if (cfg.collectionTemplate) ids.collection_id = renderTemplate(cfg.collectionTemplate, groups);
     return ids.item_id ? ids : null;
   } catch (e) {
-    log(`skip ${relPath}: ${e.message}`, "warn");
+    log(`${cfg.name}: skip ${relPath}: ${e.message}`, "warn");
     return null;
   }
 }
@@ -347,7 +359,7 @@ async function* walk(dir, cfg, prefix = "", depth = 0) {
 // Files that pass the include patterns but yield no item ID are counted, not
 // stored: they can never upload, and the count is what explains that.
 async function scan(root, cfg) {
-  const rows = new Map((await filesAll()).map((r) => [r.path, r]));
+  const rows = new Map((await filesOf(cfg.id)).map((r) => [r.path, r]));
   const seen = new Map();
   // Files that exist but could not be read this pass, for example while the
   // cycler holds them open. Their rows are kept so their sync state survives.
@@ -358,17 +370,17 @@ async function scan(root, cfg) {
     if (!ids) { unattachable++; continue; }
     let file;
     try { file = await handle.getFile(); }
-    catch (e) { log(`cannot read ${rel}: ${e.message}`, "warn"); unreadable.add(rel); continue; }
+    catch (e) { log(`${cfg.name}: cannot read ${rel}: ${e.message}`, "warn"); unreadable.add(rel); continue; }
     const old = rows.get(rel);
-    const row = { attempts: 0, nextTry: 0, ...old, path: rel, size: file.size, mtime: file.lastModified,
+    const row = { attempts: 0, nextTry: 0, ...old, watch: cfg.id, path: rel, size: file.size, mtime: file.lastModified,
                   itemId: ids.item_id, collectionId: ids.collection_id || null };
     if (row.size !== old?.size || row.mtime !== old?.mtime) { row.attempts = 0; row.nextTry = 0; }
     if (!old || row.size !== old.size || row.mtime !== old.mtime
         || row.itemId !== old.itemId || row.collectionId !== old.collectionId) await filePut(row);
     seen.set(rel, { row, handle });
   }
-  for (const path of rows.keys()) if (!seen.has(path) && !unreadable.has(path)) await fileDel(path);
-  if (unattachable) log(`${unattachable} file(s) have no item ID and cannot be uploaded; check the Item ID regexes`, "warn");
+  for (const path of rows.keys()) if (!seen.has(path) && !unreadable.has(path)) await fileDel(cfg.id, path);
+  if (unattachable) log(`${cfg.name}: ${unattachable} file(s) have no item ID and cannot be uploaded; check the Item ID regexes`, "warn");
   return { seen, unattachable };
 }
 const isPending = (r) => r.size !== r.syncedSize || r.mtime !== r.syncedMtime;
@@ -468,14 +480,14 @@ async function createBlock(cfg, itemId, blockType, fileId) {
 }
 
 // ------------------------------------------------------------------- sync
-async function attachPending(cfg, seen) {
-  const now = Date.now();
-  const due = [...seen.values()].filter(({ row }) => isPending(row) && row.nextTry <= now);
+// `due` holds {row, handle, cfg} from every watched path. They share one
+// datalab, so one /info check and one item cache serve them all.
+async function attachPending(due) {
   // With nothing to send no request is made, so an old outage no longer applies.
   if (!due.length) { status.serverError = null; return; }
 
   // A server outage is not each file's fault, so it costs no attempts.
-  try { await api(cfg, "GET", "/info"); status.serverError = null; }
+  try { await api(due[0].cfg, "GET", "/info"); status.serverError = null; }
   catch (e) {
     status.serverError = e.message;
     log(`datalab unreachable, leaving ${due.length} file(s) pending: ${e.message}`, "warn");
@@ -484,7 +496,7 @@ async function attachPending(cfg, seen) {
 
   log(`attaching ${due.length} file(s)`);
   const items = new Map();
-  for (const { row, handle } of due) {
+  for (const { row, handle, cfg } of due) {
     try {
       if (!items.has(row.itemId)) items.set(row.itemId, await ensureItem(cfg, row.itemId, row.collectionId));
       const item = items.get(row.itemId);
@@ -504,8 +516,8 @@ async function attachPending(cfg, seen) {
                            attempts: 0, nextTry: 0, lastError: null, lastErrorAt: null,
                            lastSynced: Date.now() });
       await filePut(row);
-      log(result.not_modified ? `${row.path} already up to date on ${row.itemId}`
-        : `attached ${row.path} -> ${row.itemId}${replaceId ? " (replaced)" : ""}`, "ok");
+      log(result.not_modified ? `${cfg.name}: ${row.path} already up to date on ${row.itemId}`
+        : `${cfg.name}: attached ${row.path} -> ${row.itemId}${replaceId ? " (replaced)" : ""}`, "ok");
 
       const block = cfg.blocks.find((b) => b.re.test(file.name));
       const fileId = result.file_id;
@@ -515,7 +527,7 @@ async function attachPending(cfg, seen) {
         try {
           await createBlock(cfg, row.itemId, block.type, fileId);
           item.blocks_obj = { ...item.blocks_obj, [`new-${fileId}`]: { blocktype: block.type, file_id: fileId } };
-          log(`created ${block.type} block on ${row.itemId} for ${row.path}`, "ok");
+          log(`${cfg.name}: created ${block.type} block on ${row.itemId} for ${row.path}`, "ok");
         } catch (e) {
           log(`could not create ${block.type} block on ${row.itemId}: ${e.message}`, "bad");
         }
@@ -526,19 +538,28 @@ async function attachPending(cfg, seen) {
       row.lastError = e.message;
       row.lastErrorAt = Date.now();
       await filePut(row);
-      log(`failed ${row.path}: ${e.message}`, "bad");
+      log(`${cfg.name}: failed ${row.path}: ${e.message}`, "bad");
     }
   }
 }
 
 // ---------------------------------------------------------------- page glue
 const $ = (id) => document.getElementById(id);
-let root = null;
 let timer = null;
+// The datalab settings, and the watched paths in the order of the cards.
+let global = { ...DEFAULTS };
+let watches = [];
 // What the page knows beyond the stored rows. `problem` is a banner about
-// setup (no key, no folder access); `serverError` is the last failed /info.
-const status = { syncing: false, problem: null, folderWarning: null, serverError: null, unattachable: 0,
+// setup (no key, invalid settings); `serverError` is the last failed /info.
+const status = { syncing: false, problem: null, serverError: null,
                  lastPassAt: null, nextAt: null, unsupported: false };
+// Per watched path: `root` is the folder being read, `handle` one stored but
+// awaiting permission, and `error` why the last scan of it failed.
+const wstate = new Map();
+const ws = (id) => { if (!wstate.has(id)) wstate.set(id, {}); return wstate.get(id); };
+const watchOf = (id) => watches.find((w) => w.id === id);
+const active = () => watches.filter((w) => ws(w.id).root);
+const newId = () => Math.random().toString(36).slice(2, 10);
 
 function log(msg, cls = "") {
   const line = document.createElement("div");
@@ -549,14 +570,33 @@ function log(msg, cls = "") {
 }
 function setProblem(text) { status.problem = text; render(); }
 
-async function loadSettings() {
+const pick = (keys, o) => Object.fromEntries(keys.map((k) => [k, o[k] ?? ""]));
+async function loadState() {
   const saved = (await kvGet("settings")) || {};
-  const s = { ...DEFAULTS, ...saved };
-  for (const k of FIELDS) $(k).value = s[k];
-  return s;
+  global = pick(FIELDS, { ...DEFAULTS, ...saved });
+  watches = await kvGet("watches");
+  if (!watches) {
+    // A new browser, or one from before several paths. Then the settings held
+    // the one path's patterns and its folder was stored under "folder".
+    const { name, path, ...patterns } = DEFAULT_WATCH;
+    watches = [{ id: "default", name, path: (await kvGet("configPath")) || "",
+                 ...pick(Object.keys(patterns), { ...patterns, ...saved }) }];
+    const folder = await kvGet("folder");
+    if (folder) await kvSet("folder:default", folder);
+    await kvSet("watches", watches);
+    await kvSet("settings", global);
+  }
+  for (const k of FIELDS) $(k).value = global[k];
 }
-function readSettings() {
-  return Object.fromEntries(FIELDS.map((k) => [k, $(k).value.trim()]));
+const saveWatches = () => kvSet("watches", watches);
+
+// Forgets a watched path: its folder, its rows and its card. Files already
+// on datalab stay there.
+async function dropWatch(id) {
+  await filesDrop(id);
+  await kvDel("folder:" + id);
+  wstate.delete(id);
+  watches = watches.filter((w) => w.id !== id);
 }
 
 // The formatting helpers are the dashboard's, taking milliseconds here
@@ -581,52 +621,101 @@ const bytes = (n) => n == null ? "" :
   n < 1073741824 ? (n / 1048576).toFixed(1) + " MB" : (n / 1073741824).toFixed(2) + " GB";
 const tile = (n, label, cls) =>
   `<div class="tile ${cls || ""}"><div class="n">${n}</div><div class="l">${label}</div></div>`;
+const code = (s) => `<span class="mono">${esc(s)}</span>`;
 
-async function render() {
-  const rows = await filesAll();
+// One card per watched path, as on beholder's dashboard. The edit form is
+// built once here, so the 15-second refresh in render() never wipes a box
+// being typed in. render() fills only each card's .live part.
+const WATCH_INPUTS = [
+  ["name", "Name"],
+  ["path", "Folder path from config.yaml (checks the folder you pick)"],
+  ["itemType", "Item type for new items"],
+  ["include", "Include patterns (comma separated)"],
+  ["exclude", "Exclude patterns (comma separated)"],
+  ["idPattern", "Item ID regexes, one per line (named group <code>item_id</code>)", "textarea"],
+  ["itemTemplate", "Item ID template"],
+  ["collectionTemplate", "Collection ID template (blank for none)"],
+  ["blockPatterns", "Block patterns (<code>glob=blocktype</code>, comma separated)"],
+  ["maxDepth", "Max folder depth (blank for unlimited)", "number"],
+].map(([k, label, kind]) => `<label>${label}${kind === "textarea"
+  ? `<textarea name="${k}" rows="1" spellcheck="false"></textarea>`
+  : `<input name="${k}"${kind === "number" ? ' type="number" min="0"' : ""}>`}</label>`).join("");
+function buildCards() {
+  if (!watches.length) {
+    $("watches").innerHTML = `<div class="card empty">No watched paths. Load a config.yaml in
+      Datalab settings, or click Add watched path.</div>`;
+    return;
+  }
+  $("watches").replaceChildren(...watches.map((w) => {
+    const card = document.createElement("div");
+    card.className = "card watch";
+    card.dataset.id = w.id;
+    card.dataset.name = w.name;
+    card.innerHTML = `<div class="live"></div>
+      <details class="edit"><summary>Edit patterns</summary>
+        <div class="grid">${WATCH_INPUTS}</div>
+        <div class="actions"><button data-act="save">Save patterns</button>
+          <button data-act="remove">Remove this path</button></div>
+      </details>`;
+    for (const k of WATCH_FIELDS) card.querySelector(`[name=${k}]`).value = w[k];
+    return card;
+  }));
+}
+const readWatch = (card) =>
+  Object.fromEntries(WATCH_FIELDS.map((k) => [k, card.querySelector(`[name=${k}]`).value.trim()]));
+
+// The rules a path syncs by, in a few lines, so each card says what it picks up.
+function rulesHtml(w) {
+  const rule = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
+  const depth = String(w.maxDepth).trim() === "" ? "any depth" : `up to ${esc(w.maxDepth)} folders down`;
+  const ids = w.idPattern.split("\n").map((x) => x.trim()).filter(Boolean);
+  let h = rule("Files", code(w.include || "*") + (w.exclude ? `, except ${code(w.exclude)}` : "") + `, ${depth}`);
+  h += rule("Item ID", (ids.length ? ids.map(code).join(" or ") : "every file")
+    + (w.itemTemplate && w.itemTemplate !== "{item_id}" ? ` &rarr; ${code(w.itemTemplate)}` : ""));
+  h += rule("New items", `type ${w.itemType ? code(w.itemType) : '<span class="err">none set</span>'}`
+    + (w.collectionTemplate ? `, in collection ${code(w.collectionTemplate)}` : ""));
+  if (w.blockPatterns) h += rule("Blocks", splitList(w.blockPatterns)
+    .map((p) => code(p.split("=").map((x) => x.trim()).join(" → "))).join(", "));
+  return `<dl class="rules">${h}</dl>`;
+}
+
+function watchHtml(w, rows) {
+  const st = ws(w.id);
   const pending = rows.filter(isPending);
   const stuck = pending.filter((r) => r.attempts > 0)
     .sort((a, b) => b.attempts - a.attempts || (b.lastErrorAt || 0) - (a.lastErrorAt || 0));
   const recent = rows.filter((r) => r.lastSynced).sort((a, b) => b.lastSynced - a.lastSynced).slice(0, 10);
-  const lastUpload = recent[0]?.lastSynced;
 
-  const pill = $("state");
-  if (status.unsupported) { pill.className = "pill bad"; pill.textContent = "unsupported browser"; }
-  else if (!root) { pill.className = "pill"; pill.textContent = "not started"; }
-  else if (status.syncing) { pill.className = "pill"; pill.textContent = "syncing"; }
-  else if (status.serverError) { pill.className = "pill bad"; pill.textContent = "datalab unreachable"; }
-  else if (stuck.length) { pill.className = "pill warn"; pill.textContent = stuck.length + " stuck"; }
-  else { pill.className = "pill ok"; pill.textContent = "running"; }
-  $("syncNow").disabled = !root || status.syncing;
-  $("syncNow").textContent = status.syncing ? "syncing" : "Sync now";
+  const [cls, word] = st.patternError ? ["bad", "invalid patterns"]
+    : st.error ? ["bad", "folder unreadable"]
+    : st.root ? (stuck.length ? ["warn", stuck.length + " stuck"] : ["ok", "watching"])
+    : st.handle ? ["warn", "needs access"] : ["", "no folder"];
+  let h = `<div class="cardhead"><h2>${esc(w.name || "unnamed")}</h2><span class="pill ${cls}">${word}</span></div>`;
+  const folder = st.root || st.handle;
+  h += `<div class="path">${folder ? `Folder ${esc(folder.name || "(unnamed)")}` : "No folder chosen"}`
+    + (w.path ? ` &middot; config path ${esc(w.path)}` : "") + `</div>`;
+  h += rulesHtml(w);
 
-  const bits = [];
-  const host = (() => { try { return new URL($("apiUrl").value).host; } catch { return ""; } })();
-  if (host) bits.push(esc(host));
-  if (root && status.nextAt) bits.push("next sync " + ago(status.nextAt));
-  if (status.lastPassAt) bits.push("last sync " + ago(status.lastPassAt));
-  bits.push("runs only while this tab is open");
-  $("meta").innerHTML = bits.join(" &middot; ");
-
-  let b = "";
-  if (status.unsupported) b += `<div class="banner">This browser cannot read folders. Open this page in Chrome or Edge.</div>`;
-  if (status.problem) b += `<div class="banner warn">${esc(status.problem)}</div>`;
-  if (status.folderWarning) b += `<div class="banner warn">${esc(status.folderWarning)}</div>`;
-  if (status.serverError) b += `<div class="banner">datalab did not answer on the last sync, so no
-    files were uploaded and none were counted as failed: ${esc(status.serverError)}</div>`;
-  $("banners").innerHTML = b;
-
-  let h = `<div class="tiles">
-    ${tile(rows.length - pending.length, "synced")}
-    ${tile(pending.length, "pending", pending.length ? "warn" : "")}
-    ${tile(stuck.length, "stuck", stuck.length ? "bad" : "")}
-    ${tile(status.unattachable, "no item_id", status.unattachable ? "warn" : "")}
-    <div class="tile"><div class="n" style="font-size:15px;padding-top:6px">${T(lastUpload)}</div>
-      <div class="l">last upload</div></div>
-  </div>`;
-  if (status.unattachable) {
-    h += `<div class="note">${status.unattachable} file(s) match the include patterns but no
-      Item ID regex, so they will never upload. Check the regexes in Settings.</div>`;
+  if (st.patternError) h += `<div class="banner">This path was skipped because its patterns
+    cannot be used: ${esc(st.patternError)}. Fix them under Edit patterns.</div>`;
+  if (st.error) h += `<div class="banner">The last sync could not read this folder: ${esc(st.error)}.
+    If it was moved or renamed, choose it again.</div>`;
+  if (st.handle && !st.root) h += `<div class="banner warn">Chrome needs your permission again
+    before it can read this folder. Click Resume access to folder.</div>`;
+  if (st.folderWarning) h += `<div class="banner warn">${esc(st.folderWarning)}</div>`;
+  if (st.root || rows.length) {
+    h += `<div class="tiles">
+      ${tile(rows.length - pending.length, "synced")}
+      ${tile(pending.length, "pending", pending.length ? "warn" : "")}
+      ${tile(stuck.length, "stuck", stuck.length ? "bad" : "")}
+      ${tile(st.unattachable || 0, "no item_id", st.unattachable ? "warn" : "")}
+      <div class="tile"><div class="n" style="font-size:15px;padding-top:6px">${T(recent[0]?.lastSynced)}</div>
+        <div class="l">last upload</div></div>
+    </div>`;
+  }
+  if (st.unattachable) {
+    h += `<div class="note">${st.unattachable} file(s) match the include patterns but no
+      Item ID regex, so they will never upload. Check the regexes under Edit patterns.</div>`;
   }
   if (stuck.length) {
     // No deadline on a file that is still failing means Sync now cleared
@@ -642,7 +731,7 @@ async function render() {
     h += `</table></div>`;
   }
   if (recent.length) {
-    h += `<div class="sec">Recently uploaded</div><div class="scroll"><table>
+    h += `<div class="sec">Recently uploaded</div><div class="scroll"><table class="recent">
       <tr><th>File</th><th>Item</th><th>Size</th><th>When</th></tr>`;
     for (const r of recent) {
       h += `<tr><td class="mono">${esc(r.path)}</td><td class="mono">${esc(r.itemId)}</td>
@@ -650,22 +739,83 @@ async function render() {
     }
     h += `</table></div>`;
   }
-  $("body").innerHTML = root || rows.length ? h : "";
+  const off = status.unsupported ? " disabled" : "";
+  h += `<div class="actions"><button data-act="pick"${off}>${st.root ? "Choose a different folder" : "Choose folder"}</button>`
+    + (st.handle && !st.root ? `<button data-act="resume">Resume access to folder</button>` : "") + `</div>`;
+  return h;
+}
+
+async function render() {
+  const rows = await filesAll();
+  const byWatch = new Map(watches.map((w) => [w.id, []]));
+  for (const r of rows) byWatch.get(r.watch)?.push(r);
+  const mine = [...byWatch.values()].flat();
+  const stuck = mine.filter((r) => isPending(r) && r.attempts > 0).length;
+  const failing = watches.filter((w) => ws(w.id).error || ws(w.id).patternError).length;
+  const idle = watches.length - active().length;
+
+  // The header sums the cards, worst first, as beholder's header pill does.
+  const pill = $("state");
+  const set = (cls, text) => { pill.className = "pill " + cls; pill.textContent = text; };
+  if (status.unsupported) set("bad", "unsupported browser");
+  else if (!active().length) set("", "not started");
+  else if (status.syncing) set("", "syncing");
+  else if (status.serverError) set("bad", "datalab unreachable");
+  else if (failing) set("bad", `${failing} path${failing > 1 ? "s" : ""} failing`);
+  else if (idle) set("warn", `${idle} path${idle > 1 ? "s" : ""} not syncing`);
+  else if (stuck) set("warn", stuck + " stuck");
+  else set("ok", "running");
+  $("syncNow").disabled = !active().length || status.syncing;
+  $("syncNow").textContent = status.syncing ? "syncing" : "Sync now";
+
+  const bits = [];
+  const host = (() => { try { return new URL(global.apiUrl).host; } catch { return ""; } })();
+  if (host) bits.push(esc(host));
+  bits.push(`${active().length} of ${watches.length} path${watches.length === 1 ? "" : "s"} syncing`);
+  if (active().length && status.nextAt) bits.push("next sync " + ago(status.nextAt));
+  if (status.lastPassAt) bits.push("last sync " + ago(status.lastPassAt));
+  bits.push("runs only while this tab is open");
+  $("meta").innerHTML = bits.join(" &middot; ");
+
+  let b = "";
+  if (status.unsupported) b += `<div class="banner">This browser cannot read folders. Open this page in Chrome or Edge.</div>`;
+  if (status.problem) b += `<div class="banner warn">${esc(status.problem)}</div>`;
+  if (status.serverError) b += `<div class="banner">datalab did not answer on the last sync, so no
+    files were uploaded and none were counted as failed: ${esc(status.serverError)}</div>`;
+  $("banners").innerHTML = b;
+
+  for (const card of document.querySelectorAll(".watch")) {
+    const w = watchOf(card.dataset.id);
+    if (w) card.querySelector(".live").innerHTML = watchHtml(w, byWatch.get(w.id));
+  }
   $("foot").textContent = "updated " + new Date().toLocaleTimeString();
 }
 
-// `now` is the Sync now button. Like the dashboard's, it also clears the
-// backoff on failing files so they are retried on this pass.
-async function syncOnce({ now = false } = {}) {
-  if (!root) return;
+// One pass scans every folder, then uploads what is due. Passes run one at a
+// time: a pass asked for while one runs waits for it, and several such asks
+// share one pass. `now` is the Sync now button. Like the dashboard's, it also
+// clears the backoff on failing files so they are retried on this pass.
+let pass = Promise.resolve(), queued = null;
+function syncOnce({ now = false } = {}) {
+  if (queued) { queued.now ||= now; return pass; }
+  const opts = queued = { now };
+  pass = pass.then(() => { queued = null; return syncPass(opts); })
+    .catch((e) => log(`sync failed: ${e.message}`, "bad"));
+  return pass;
+}
+// Runs fn after the pass in progress and any queued one, so that removing a
+// path never happens halfway through a pass that is still writing its rows.
+function exclusive(fn) {
+  const p = pass.then(fn);
+  pass = p.catch(() => {});
+  return p;
+}
+async function syncPass({ now }) {
+  if (!active().length) return;
   // Two open tabs would upload every file twice. The lock lets one sync at a time.
   await navigator.locks.request("beholder-sync", { ifAvailable: true }, async (lock) => {
     if (!lock) { log("another tab is syncing, skipped this run", "warn"); return; }
-    // A half-typed regex in Settings would otherwise throw out of the timer unseen.
-    let cfg;
-    try { cfg = compileSettings(readSettings()); }
-    catch (e) { setProblem(`Sync skipped, the settings are invalid: ${e.message}`); return; }
-    if (!cfg.apiKey) { setProblem("Enter the API key in Settings, then Save settings."); return; }
+    if (!global.apiKey) { setProblem("Enter the API key in Datalab settings, then Save settings."); return; }
     status.problem = null;
     status.syncing = true;
     await render();
@@ -673,9 +823,30 @@ async function syncOnce({ now = false } = {}) {
       if (now) {
         for (const r of await filesAll()) if (r.nextTry) await filePut({ ...r, nextTry: 0 });
       }
-      const { seen, unattachable } = await scan(root, cfg);
-      status.unattachable = unattachable;
-      await attachPending(cfg, seen);
+      const due = [];
+      for (const w of active()) {
+        const st = ws(w.id);
+        let cfg;
+        try { cfg = compileSettings({ ...global, ...w }); st.patternError = null; }
+        catch (e) {
+          Object.assign(st, { patternError: e.message, unattachable: 0 });
+          log(`${w.name}: skipped, the patterns are invalid: ${e.message}`, "bad");
+          continue;
+        }
+        try {
+          const { seen, unattachable } = await scan(st.root, cfg);
+          Object.assign(st, { unattachable, error: null });
+          const t = Date.now();
+          for (const { row, handle } of seen.values()) {
+            if (isPending(row) && row.nextTry <= t) due.push({ row, handle, cfg });
+          }
+        } catch (e) {
+          // One unreadable folder must not stop the other paths.
+          Object.assign(st, { error: e.message, unattachable: 0 });
+          log(`${w.name}: scan failed: ${e.message}`, "bad");
+        }
+      }
+      await attachPending(due);
       status.lastPassAt = Date.now();
     } catch (e) {
       log(`sync failed: ${e.message}`, "bad");
@@ -689,7 +860,8 @@ async function syncOnce({ now = false } = {}) {
 
 function schedule() {
   clearInterval(timer);
-  const ms = Math.max(1, Number($("intervalMin").value) || DEFAULTS.intervalMin) * 60_000;
+  if (!active().length) { status.nextAt = null; return; }
+  const ms = Math.max(1, Number(global.intervalMin) || DEFAULTS.intervalMin) * 60_000;
   status.nextAt = Date.now() + ms;
   timer = setInterval(() => { status.nextAt = Date.now() + ms; syncOnce(); }, ms);
 }
@@ -707,83 +879,148 @@ function folderWarning(name, path) {
   const { expected } = folderHints(path);
   if (!expected || !name || name.toLowerCase() === expected.toLowerCase()) return null;
   return `You chose the folder "${name}", but the config watches "${expected}" (${path}). ` +
-    "If that is not the folder the cycler writes to, click Choose a different folder.";
+    "If that is not the folder this instrument writes to, click Choose a different folder.";
 }
 
-async function useFolder(handle) {
-  root = handle;
-  status.folderWarning = folderWarning(handle.name, await kvGet("configPath"));
-  $("folderName").textContent = handle.name || "Chosen folder";
-  $("folderHint").textContent = "Watching this folder and everything inside it.";
-  $("pick").textContent = "Choose a different folder";
-  $("resume").hidden = true;
-  status.problem = null;
+async function useFolder(id, handle, { sync = true } = {}) {
+  Object.assign(ws(id), { root: handle, handle, error: null,
+                          folderWarning: folderWarning(handle.name, watchOf(id).path) });
   schedule();
-  await syncOnce();
+  if (sync) await syncOnce();
+  else await render();
 }
 
-$("pick").onclick = async () => {
-  let handle;
-  // The browser remembers the last folder picked under this id, and that
-  // takes precedence over startIn after the first pick.
-  const { startIn } = folderHints(await kvGet("configPath"));
-  try { handle = await window.showDirectoryPicker({ id: "beholder-sync", mode: "read", ...(startIn && { startIn }) }); }
-  catch (e) { if (e.name !== "AbortError") setProblem(`Could not open the folder: ${e.message}`); return; }
-  await kvSet("folder", handle);
-  await useFolder(handle);
+const actions = {
+  async pick(w) {
+    let handle;
+    // The browser remembers the last folder picked under each id, and that
+    // takes precedence over startIn after the first pick.
+    const { startIn } = folderHints(w.path);
+    try { handle = await window.showDirectoryPicker({ id: "bs-" + w.id, mode: "read", ...(startIn && { startIn }) }); }
+    catch (e) { if (e.name !== "AbortError") setProblem(`Could not open the folder: ${e.message}`); return; }
+    await kvSet("folder:" + w.id, handle);
+    await useFolder(w.id, handle);
+  },
+  async resume(w) {
+    const { handle } = ws(w.id);
+    if ((await handle.requestPermission({ mode: "read" })) === "granted") await useFolder(w.id, handle);
+  },
+  async save(w, card) {
+    const fields = readWatch(card);
+    try {
+      if (!fields.name) throw new Error("the path needs a name");
+      if (watches.some((o) => o !== w && o.name === fields.name)) throw new Error(`another path is already named ${fields.name}`);
+      compileSettings({ ...global, ...fields });
+    } catch (e) { setProblem(`Patterns for ${w.name} not saved: ${e.message}`); return; }
+    Object.assign(w, fields);
+    card.dataset.name = w.name;
+    await saveWatches();
+    const st = ws(w.id);
+    if (st.root) st.folderWarning = folderWarning(st.root.name, w.path);
+    log(`${w.name}: patterns saved`);
+    status.problem = null;
+    await render();
+  },
+  async remove(w) {
+    if (!confirm(`Stop syncing ${w.name || "this path"}? Files already on datalab stay there.`)) return;
+    await exclusive(async () => { await dropWatch(w.id); await saveWatches(); });
+    log(`${w.name}: removed`);
+    buildCards();
+    schedule();
+    await render();
+  },
 };
-$("resume").onclick = async () => {
-  const handle = await kvGet("folder");
-  if ((await handle.requestPermission({ mode: "read" })) === "granted") await useFolder(handle);
+$("watches").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-act]");
+  const card = b?.closest(".watch");
+  if (card) actions[b.dataset.act](watchOf(card.dataset.id), card)
+    .catch((err) => { log(`${b.textContent} failed: ${err.message}`, "bad"); setProblem(`${b.textContent} failed: ${err.message}`); });
+});
+$("addWatch").onclick = async () => {
+  let n = watches.length + 1;
+  while (watches.some((w) => w.name === `path ${n}`)) n++;
+  watches.push({ ...DEFAULT_WATCH, id: newId(), name: `path ${n}` });
+  await saveWatches();
+  buildCards();
+  document.querySelector(".watch:last-child .edit").open = true;
+  await render();
 };
 $("syncNow").onclick = () => syncOnce({ now: true });
 $("save").onclick = async () => {
-  const s = readSettings();
-  try { compileSettings(s); } catch (e) { setProblem(`Settings not saved: ${e.message}`); return; }
-  await kvSet("settings", s);
+  const s = Object.fromEntries(FIELDS.map((k) => [k, $(k).value.trim()]));
+  try { if (!/^https?:$/.test(new URL(s.apiUrl).protocol)) throw 0; }
+  catch { setProblem("Settings not saved: the datalab API URL must start with https:// or http://."); return; }
+  if (!(Number(s.intervalMin) >= 1)) { setProblem("Settings not saved: minutes between syncs must be 1 or more."); return; }
+  global = s;
+  await kvSet("settings", global);
   log("settings saved");
   status.problem = null;
-  if (root) schedule();
+  schedule();
   await render();
 };
 $("loadYaml").onclick = async () => {
   try {
     const { cfg, skipped } = loadYamlLenient($("yaml").value);
-    const { s, wp, dl, names, datalabChoices } =
-      settingsFromConfig(cfg, $("pathName").value, $("datalabName").value);
-    // With several datalabs or watched paths, the first load picks one and
-    // shows a dropdown. Choosing another and pressing Load again loads it.
+    const { s, dl, paths, watches: incoming, datalabChoices } = settingsFromConfig(cfg, $("datalabName").value);
+    for (const w of incoming) {
+      try { compileSettings({ ...global, ...s, ...w }); }
+      catch (e) { throw new Error(`watched path ${w.name}: ${e.message}`); }
+    }
+    // With several datalabs, the first load picks one and shows a dropdown.
+    // Choosing another and pressing Load again loads it.
     $("datalabName").replaceChildren(...datalabChoices.map(([n, url]) => new Option(`${n} (${url})`, n)));
     $("datalabName").value = dl.name;
     $("datalabChoice").hidden = datalabChoices.length < 2;
-    $("pathName").replaceChildren(...names.map((n) => new Option(n, n)));
-    $("pathName").value = wp.name;
-    $("pathChoice").hidden = names.length < 2;
     s.apiUrl = await resolveApiUrl(s.apiUrl);
-    for (const [k, v] of Object.entries(s)) $(k).value = v;
-    compileSettings(readSettings());
-    await kvSet("settings", readSettings());
-    log(`loaded watched path ${wp.name} for datalab ${dl.name} from config.yaml`, "ok");
+    global = { ...global, ...s };
+    for (const k of FIELDS) $(k).value = global[k];
+    await kvSet("settings", global);
+
+    // The config replaces the watched paths. One already set up keeps its id,
+    // and so its folder and sync state, when it has the same name, else the
+    // same folder path, else a chosen folder named as the path's last part.
+    // The last covers a path set up by hand, which has no config name or path.
+    await exclusive(async () => {
+      const ids = [];
+      const claim = (same) => incoming.forEach((n, i) => {
+        ids[i] ??= watches.find((o) => same(o, n) && !ids.includes(o.id))?.id;
+      });
+      claim((o, n) => o.name === n.name);
+      claim((o, n) => !!n.path && o.path === n.path);
+      claim((o, n) => {
+        const picked = ws(o.id).handle?.name, expected = folderHints(n.path).expected;
+        return !!picked && !!expected && picked.toLowerCase() === expected.toLowerCase();
+      });
+      for (const o of [...watches]) {
+        if (!ids.includes(o.id)) { await dropWatch(o.id); log(`${o.name}: removed, the config does not list it`); }
+      }
+      watches = incoming.map((n, i) => ({ ...n, id: ids[i] || newId() }));
+      await saveWatches();
+    });
+    buildCards();
+    for (const w of active()) ws(w.id).folderWarning = folderWarning(ws(w.id).root.name, w.path);
+    log(`loaded ${watches.length} watched path(s) for datalab ${dl.name} from config.yaml: ` +
+        watches.map((w) => w.name).join(", "), "ok");
+
     const problems = [];
     if (skipped.length) {
       problems.push(`Config loaded without ${skipped.map((k) => `line ${k.line} (${k.reason})`).join(", ")}. ` +
         "Those keys were left empty. Fix them in config.yaml and load again." + windowsPathHint(skipped));
     }
-    if (!s.apiKey && !$("apiKey").value) {
+    if (!global.apiKey) {
       problems.push("The config has no api_key. Enter it in the API key box and Save settings.");
     }
     status.problem = problems.join(" ") || null;
-    if ((wp.id_patterns || []).some((p) => p.includes("?P<group_id>"))) {
-      log("this page does not share new items with a group_id; set sharing in datalab", "warn");
+    for (const wp of paths) {
+      if ((wp.id_patterns || []).some((p) => p.includes("?P<group_id>"))) {
+        log(`${wp.name}: this page does not share new items with a group_id; set sharing in datalab`, "warn");
+      }
+      // "C:\temp" in double quotes parses, but \t becomes a tab.
+      if (/[\x00-\x1f]/.test(wp.path || "")) {
+        log(`${wp.name}: the path ${JSON.stringify(wp.path)} holds a control character; quote Windows paths with single quotes`, "warn");
+      }
     }
-    // "C:\temp" in double quotes parses, but \t becomes a tab.
-    if (/[\x00-\x1f]/.test(wp.path || "")) {
-      log(`the path ${JSON.stringify(wp.path)} holds a control character; quote Windows paths with single quotes`, "warn");
-    }
-    await kvSet("configPath", wp.path);
-    if (root) status.folderWarning = folderWarning(root.name, wp.path);
-    else if (wp.path) $("folderHint").textContent = `Choose the folder that matches ${wp.path} on this computer.`;
-    if (root) schedule();
+    schedule();
     await render();
   } catch (e) {
     setProblem(`Config not loaded: ${e.message}` + windowsPathHint([{ reason: e.message }]));
@@ -795,30 +1032,34 @@ const windowsPathHint = (skipped) => skipped.some((k) => /escape sequence|hexade
   ? " A Windows path needs single quotes ('C:\\Users\\...'), forward slashes, or doubled backslashes." : "";
 
 (async () => {
-  const s = await loadSettings();
-  $("settings").open = !s.apiKey;
+  await loadState();
+  buildCards();
+  $("settings").open = !global.apiKey;
   // Keeps the "ago" times current between syncs, as the dashboard's poll does.
   setInterval(render, 15_000);
   if (!window.showDirectoryPicker) {
     status.unsupported = true;
-    $("pick").disabled = true;
     await render();
     return;
   }
-  await render();
-  const handle = await kvGet("folder");
-  if (!handle) return;
   // The grant survives a restart only if the user chose "Allow on every visit".
-  if ((await handle.queryPermission({ mode: "read" })) === "granted") await useFolder(handle);
-  else {
-    $("folderName").textContent = handle.name;
-    $("folderHint").textContent = "Chrome needs your permission again before it can read this folder.";
-    $("resume").hidden = false;
-    setProblem("Click Resume access to folder to continue syncing.");
+  // Every folder that kept it joins before the first pass, so one pass covers all.
+  let resumed = false;
+  for (const w of watches) {
+    const handle = await kvGet("folder:" + w.id);
+    if (!handle) continue;
+    if ((await handle.queryPermission({ mode: "read" })) === "granted") {
+      await useFolder(w.id, handle, { sync: false });
+      resumed = true;
+    } else ws(w.id).handle = handle;
   }
+  if (resumed) await syncOnce();
+  else await render();
 })();
 // Exposed for the test harness, which drives a sync against a folder it builds.
-window.beholder = { useFolder, syncOnce, filesAll, compileSettings, idsFor, globToRegex, settingsFromConfig, loadYamlLenient, folderHints, folderWarning };
+window.beholder = { useFolder, syncOnce, filesAll, compileSettings, idsFor, globToRegex, settingsFromConfig,
+                    loadYamlLenient, folderHints, folderWarning,
+                    watchId: (name) => watches.find((w) => w.name === name)?.id, settings: () => global };
 </script>
 </body>
 </html>
