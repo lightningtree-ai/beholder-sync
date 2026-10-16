@@ -132,7 +132,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             content = fields["file"].get_payload(decode=True)
             digest = hashlib.sha256(content).hexdigest()
             name = fields["file"].get_filename()
-            replace = fields["replace_file"].get_content().strip() if "replace_file" in fields else None
+            # Like datalab, which reads request.form["replace_file"] and
+            # answers Werkzeug's default 400 when it is missing.
+            if "replace_file" not in fields:
+                return self.reply(400, {"message": "The browser (or proxy) sent a request "
+                                                   "that this server could not understand."})
+            replace = fields["replace_file"].get_content().strip()
             if replace:
                 f = next(f for f in item["files"] if f["immutable_id"] == replace)
                 if f["hash"] == digest:

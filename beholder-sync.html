@@ -451,7 +451,8 @@ async function upload(cfg, itemId, file, replaceId) {
   const form = new FormData();
   form.append("file", file, file.name);
   form.append("item_id", itemId);
-  if (replaceId) form.append("replace_file", replaceId);
+  // The server reads replace_file with no default, so a new file sends it empty.
+  form.append("replace_file", replaceId || "");
   const { status, data } = await api(cfg, "POST", "/upload-file/", { form, ok: [201, 304] });
   // 304: the server compared hashes and already holds this content.
   if (status === 304) return { file_id: replaceId, not_modified: true };
