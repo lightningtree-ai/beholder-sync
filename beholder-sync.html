@@ -273,6 +273,26 @@ function settingsFromConfig(cfg, pathName, datalabName) {
            datalabChoices: usable.map((d) => [d.name, d.url]) };
 }
 
+// Parses a config.yaml that may hold a few bad lines, so the rest still loads.
+// Each failing line first loses its value, which leaves the key as null, and
+// is commented out if it fails again. Returns the config and the lines skipped.
+function loadYamlLenient(text) {
+  const lines = text.split("\n"), skipped = [];
+  for (let tries = 0; tries < 50; tries++) {
+    try {
+      return { cfg: jsyaml.load(lines.join("\n")), skipped };
+    } catch (e) {
+      const n = e.mark?.line;
+      if (n == null || n >= lines.length || lines[n].trimStart().startsWith("#")) throw e;
+      const keyed = lines[n].match(/^(\s*(?:-\s+)?[\w-]+:)\s+\S/);
+      const again = skipped.some((k) => k.line === n + 1);
+      lines[n] = keyed && !again ? keyed[1] + " null" : "#" + lines[n];
+      if (!again) skipped.push({ line: n + 1, reason: e.reason || e.message });
+    }
+  }
+  throw new Error("too many lines fail to parse");
+}
+
 // Beholder is given the UI address and finds the API from a meta tag in the
 // page. The UI page sends no CORS headers, so a browser cannot read it.
 // Instead try the address itself and then /api, and keep whichever answers
@@ -727,7 +747,7 @@ $("save").onclick = async () => {
 };
 $("loadYaml").onclick = async () => {
   try {
-    const cfg = jsyaml.load($("yaml").value);
+    const { cfg, skipped } = loadYamlLenient($("yaml").value);
     const { s, wp, dl, names, datalabChoices } =
       settingsFromConfig(cfg, $("pathName").value, $("datalabName").value);
     // With several datalabs or watched paths, the first load picks one and
@@ -743,20 +763,35 @@ $("loadYaml").onclick = async () => {
     compileSettings(readSettings());
     await kvSet("settings", readSettings());
     log(`loaded watched path ${wp.name} for datalab ${dl.name} from config.yaml`, "ok");
-    status.problem = s.apiKey || $("apiKey").value ? null
-      : "The config has no api_key. Enter it in the API key box and Save settings.";
+    const problems = [];
+    if (skipped.length) {
+      problems.push(`Config loaded without ${skipped.map((k) => `line ${k.line} (${k.reason})`).join(", ")}. ` +
+        "Those keys were left empty. Fix them in config.yaml and load again." + windowsPathHint(skipped));
+    }
+    if (!s.apiKey && !$("apiKey").value) {
+      problems.push("The config has no api_key. Enter it in the API key box and Save settings.");
+    }
+    status.problem = problems.join(" ") || null;
     if ((wp.id_patterns || []).some((p) => p.includes("?P<group_id>"))) {
       log("this page does not share new items with a group_id; set sharing in datalab", "warn");
     }
+    // "C:\temp" in double quotes parses, but \t becomes a tab.
+    if (/[\x00-\x1f]/.test(wp.path || "")) {
+      log(`the path ${JSON.stringify(wp.path)} holds a control character; quote Windows paths with single quotes`, "warn");
+    }
     await kvSet("configPath", wp.path);
     if (root) status.folderWarning = folderWarning(root.name, wp.path);
-    else $("folderHint").textContent = `Choose the folder that matches ${wp.path} on this computer.`;
+    else if (wp.path) $("folderHint").textContent = `Choose the folder that matches ${wp.path} on this computer.`;
     if (root) schedule();
     await render();
   } catch (e) {
-    setProblem(`Config not loaded: ${e.message}`);
+    setProblem(`Config not loaded: ${e.message}` + windowsPathHint([{ reason: e.message }]));
   }
 };
+// Inside double quotes YAML reads a backslash as an escape, so a pasted
+// Windows path such as "C:\Users\..." fails to parse.
+const windowsPathHint = (skipped) => skipped.some((k) => /escape sequence|hexadecimal character/.test(k.reason))
+  ? " A Windows path needs single quotes ('C:\\Users\\...'), forward slashes, or doubled backslashes." : "";
 
 (async () => {
   const s = await loadSettings();
@@ -782,7 +817,7 @@ $("loadYaml").onclick = async () => {
   }
 })();
 // Exposed for the test harness, which drives a sync against a folder it builds.
-window.beholder = { useFolder, syncOnce, filesAll, compileSettings, idsFor, globToRegex, settingsFromConfig, folderHints, folderWarning };
+window.beholder = { useFolder, syncOnce, filesAll, compileSettings, idsFor, globToRegex, settingsFromConfig, loadYamlLenient, folderHints, folderWarning };
 </script>
 </body>
 </html>

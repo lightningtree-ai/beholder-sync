@@ -11,6 +11,8 @@ The page runs in Chrome or Edge and syncs while its tab is open.
    Opening a downloaded copy of `beholder-sync.html` from disk also loads, but folder access from a local file has not been tested.
 2. Open **Settings**. Paste a beholder `config.yaml` into the top box and click **Load config**, or fill in the boxes by hand.
    Get an API key from `<your datalab URL>/get-api-key` if the config has none.
+   If a line does not parse, the rest of the config still loads, and a banner names the line.
+   Write Windows paths in single quotes, such as `path: 'C:\Users\me\data'`.
 3. Click **Choose folder** and pick the folder your cycler writes to.
    When Chrome asks about folder access, choose **Allow on every visit**, or you will have to click **Resume access to folder** after every browser restart.
 4. Leave the tab open.

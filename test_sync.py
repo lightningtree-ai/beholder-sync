@@ -294,6 +294,29 @@ def main():
             "collectionTemplate": "APC-P2", "blockPatterns": "*.ndax=cycle", "maxDepth": "10",
         }, got)
 
+        # A Windows path pasted into double quotes breaks the YAML. The rest
+        # of the config still loads, and the banner names the line and the fix.
+        good_yaml = CONFIG_YAML.format(base=api_url.removesuffix("/api"))
+        bad_path = r'    path: "C:\\Users\SamuelAffleck\Documents"'
+        bad_yaml = good_yaml.replace('    path: "C://Users/Cycler/Desktop/data"', bad_path)
+        bad_line = bad_yaml.splitlines().index(bad_path) + 1
+        page.fill("#yaml", bad_yaml)
+        page.click("#loadYaml")
+        page.wait_for_function("document.querySelector('#banners').innerText.includes('single quotes')")
+        banner = page.inner_text("#banners")
+        check("bad line names itself in the banner", f"line {bad_line} (unknown escape sequence)" in banner, banner)
+        check("bad line leaves the other boxes filled",
+              {k: page.input_value(f"#{k}") for k in got} == got)
+        lenient = page.evaluate("(t) => beholder.loadYamlLenient(t)",
+                                good_yaml.replace("C://Users/Cycler", r"C:\Users\Cycler"))
+        check("bad \\U escape skips only its line",
+              [k["reason"] for k in lenient["skipped"]] == ["expected hexadecimal character"]
+              and lenient["cfg"]["watched_paths"][0]["path"] is None
+              and lenient["cfg"]["watched_paths"][0]["name"] == "sycamore", lenient)
+        page.fill("#yaml", good_yaml)
+        page.click("#loadYaml")
+        page.wait_for_function("document.querySelector('#banners').innerText === ''")
+
         # BEHOLDER_CONFIG=path/to/config.yaml checks that a real config maps
         # too. Only the mapping runs, so no request reaches its server.
         if real := os.environ.get("BEHOLDER_CONFIG"):
