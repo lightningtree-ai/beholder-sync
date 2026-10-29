@@ -34,6 +34,7 @@ class MockDatalab:
         self.calls = []
         self.down = False
         self.fail_uploads = False
+        self.key = "test-key"
         self.n = 0
 
     def new_id(self, prefix):
@@ -88,8 +89,11 @@ class ApiHandler(BaseHTTPRequestHandler):
         # /info answers without a key, as on the real server.
         if method == "GET" and path == "/info":
             return self.reply(200, {"data": {}})
-        if self.headers.get("DATALAB-API-KEY") != "test-key":
-            return self.reply(401, {"status": "error", "message": "bad key"})
+        if self.headers.get("DATALAB-API-KEY") != MOCK.key:
+            return self.reply(401, {"status": "failure", "message": "User must be authenticated."})
+
+        if path == "/get-current-user/":
+            return self.reply(200, {"immutable_id": "user0001", "display_name": "Test User"})
 
         if m := re.fullmatch(r"/get-item-data/(.+)", path):
             item = MOCK.items.get(m[1])
@@ -457,7 +461,8 @@ def main():
               and not MOCK.items["CEL-0003"]["collections"])
         check("item type is cells", all(i["type"] == "cells" for i in MOCK.items.values()))
         check("one pass uploads both paths' files", len(uploads()) == 4, len(uploads()))
-        check("one /info check for the whole pass", MOCK.calls.count(("GET", "/info")) == 1, MOCK.calls)
+        check("one check of the server and key for the whole pass",
+              MOCK.calls.count(("GET", "/get-current-user/")) == 1, MOCK.calls)
         check("CEL-001 has two files", len(MOCK.items["CEL-001"]["files"]) == 2)
         blocks = [b for i in MOCK.items.values() for b in i["blocks_obj"].values()]
         check("one block per file of its path's type, each wired to its file",
@@ -516,7 +521,7 @@ def main():
         sync()
         check("unchanged folder uploads nothing", uploads() == [], uploads())
         check("unchanged folder only asks datalab whether it is up",
-              MOCK.calls == [("GET", "/info")], MOCK.calls)
+              MOCK.calls == [("GET", "/get-current-user/")], MOCK.calls)
         MOCK.down = True
         sync()
         down = pill()
@@ -524,6 +529,16 @@ def main():
         sync()
         check("an outage shows with nothing to upload, and clears", (down, pill()) == ("datalab unreachable", "running"),
               (down, pill()))
+        MOCK.key = "rotated-key"
+        write({"CEL-001 run a.ndax": "a1 grown while the key was wrong"})
+        sync()
+        refused = (pill(), page.inner_text("#banners"), rows()["CEL-001 run a.ndax"]["attempts"])
+        MOCK.key = "test-key"
+        write({"CEL-001 run a.ndax": "a1"})
+        sync()
+        check("a refused key shows in the pill and a banner, costs no attempt, and clears",
+              refused[0] == "API key rejected" and "refused the API key" in refused[1]
+              and refused[2] == 0 and pill() == "running", refused)
 
         # 3. A file grows: replace in place, keep its id, no second block.
         def file_a():
