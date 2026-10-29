@@ -40,15 +40,26 @@ button:hover:enabled{border-color:var(--dim)}
 button:disabled{color:var(--dim);cursor:default}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
  padding:16px 18px;margin-bottom:16px}
+button.cta{background:var(--warnbg);color:var(--warn);border-color:var(--warn)}
+.listhead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 0 10px}
+/* Each watched folder is a disclosure: the summary says which folder and how
+   it is doing, the body holds its rules, problems and files. */
+.watch>summary{list-style:none;font-weight:400;font-size:14px}
+.watch>summary::-webkit-details-marker{display:none}
 .cardhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:2px}
-.path{color:var(--dim);font-size:12.5px;font-family:ui-monospace,SFMono-Regular,
- Menlo,Consolas,monospace;word-break:break-all;margin-bottom:14px}
-.tiles{display:flex;gap:26px;flex-wrap:wrap;margin-bottom:14px}
-.tile .n{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;
- letter-spacing:-.02em}
-.tile .l{font-size:11.5px;color:var(--dim);text-transform:uppercase;
- letter-spacing:.05em}
+.chev{display:inline-block;width:12px;font-size:11px;transition:transform .15s}
+.watch[open] .chev{transform:rotate(90deg)}
+.toggle{margin-left:auto;font-size:12.5px;font-weight:600;color:var(--dim);
+ border:1px solid var(--line);border-radius:999px;padding:3px 12px}
+.toggle::after{content:"Show details"} .watch[open] .toggle::after{content:"Hide details"}
+.watch>summary:hover .toggle{border-color:var(--dim)}
+.path{display:block;color:var(--dim);font-size:12.5px;font-family:ui-monospace,SFMono-Regular,
+ Menlo,Consolas,monospace;word-break:break-all;margin:2px 0 4px 22px}
+.tiles{display:flex;gap:2px 16px;flex-wrap:wrap;margin-left:22px;font-size:12.5px;color:var(--dim)}
+.tile .n{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+.tile.zero .n{color:var(--dim);font-weight:400}
 .tile.bad .n{color:var(--bad)} .tile.warn .n{color:var(--warn)}
+.watch>.live{border-top:1px solid var(--line);margin-top:12px;padding-top:12px}
 table{border-collapse:collapse;width:100%;font-size:13px}
 th,td{text-align:left;padding:5px 10px 5px 0;border-bottom:1px solid var(--line);
  vertical-align:top}
@@ -75,21 +86,36 @@ textarea{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resi
 .actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
 .rules{display:grid;grid-template-columns:max-content 1fr;gap:1px 12px;margin:0 0 14px;font-size:12.5px}
 .rules dt{color:var(--dim)} .rules dd{margin:0;word-break:break-all}
-.edit{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
-.edit summary{font-size:12.5px;color:var(--dim)}
+/* Edit patterns opens over the page: the boxes on the left and the preview
+   of their effect on the right, one above the other on a narrow screen. */
+dialog.edit{width:min(1180px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding:18px 22px;
+ background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:10px}
+dialog.edit::backdrop{background:rgb(0 0 0 / .4)}
+.editor{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 28px;margin-top:4px}
+@media (max-width:860px){.editor{grid-template-columns:1fr}}
+.editor .grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.dlgerr:empty{display:none} .dlgerr{margin-top:12px}
 label input,label textarea{margin-top:2px} label input{font-size:14px}
+/* A label that wraps to two lines must not push its box below the others in
+   the row, so each box sits at the bottom of its grid cell. The one-line
+   regex box gets the height of an input. */
+.grid label{display:flex;flex-direction:column;justify-content:space-between}
+.grid textarea{line-height:21px}
+.pair{display:flex;gap:6px;align-items:center} .pair button{white-space:nowrap}
+.preview td+td{white-space:nowrap}
 #log{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
  max-height:260px;overflow-y:auto;white-space:pre-wrap;margin:0}
 </style>
 </head>
 <body><div class="wrap">
-<header><h1>beholder sync</h1><span id="state" class="pill">not started</span>
+<header><h1>beholder sync</h1><button id="resume" class="cta" hidden>Resume folder access</button>
+<span id="state" class="pill">not started</span>
 <button id="syncNow" disabled>Sync now</button></header>
 <div class="sub" id="meta">Uploads cycler files from a folder on this computer to datalab while this tab is open.</div>
 <div id="banners"></div>
 
+<div class="listhead"><h2>Watched folders</h2><button id="addWatch">Add folder</button></div>
 <div id="watches"></div>
-<div class="actions" style="margin:-4px 0 16px"><button id="addWatch">Add watched path</button></div>
 
 <details class="card" id="settings">
   <summary>Datalab settings</summary>
@@ -228,10 +254,11 @@ function renderTemplate(tpl, groups) {
   });
 }
 
+const apiBase = (url) => url.replace(/\/+$/, "");
 function compileSettings(s) {
   return {
     ...s,
-    apiUrl: s.apiUrl.replace(/\/+$/, ""),
+    apiUrl: apiBase(s.apiUrl),
     include: splitList(s.include || "*").map(globToRegex),
     exclude: splitList(s.exclude).map(globToRegex),
     idPatterns: s.idPattern.split("\n").map((x) => x.trim()).filter(Boolean).map(pyRegex),
@@ -323,7 +350,7 @@ async function resolveApiUrl(url) {
 }
 
 // Returns {item_id, collection_id} for a relative path, or null to skip it.
-function idsFor(cfg, relPath) {
+function idsFor(cfg, relPath, warn = (msg) => log(msg, "warn")) {
   let groups = {};
   if (cfg.idPatterns.length) {
     const m = cfg.idPatterns.map((re) => re.exec(relPath)).find(Boolean);
@@ -336,10 +363,16 @@ function idsFor(cfg, relPath) {
     if (cfg.collectionTemplate) ids.collection_id = renderTemplate(cfg.collectionTemplate, groups);
     return ids.item_id ? ids : null;
   } catch (e) {
-    log(`${cfg.name}: skip ${relPath}: ${e.message}`, "warn");
+    warn(`${cfg.name}: skip ${relPath}: ${e.message}`);
     return null;
   }
 }
+
+// Writes an item ID regex from one example ID: each run of digits matches
+// any number of digits, and the rest is matched as typed. Beholder searches
+// the path for the regex, so it needs no ".*" around it.
+const idRegexFromExample = (ex) => "(?P<item_id>" + ex.trim().split(/(\d+)/)
+  .map((p, i) => i % 2 ? "[0-9]+" : p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("") + ")";
 
 // ------------------------------------------------------------------- scan
 async function* walk(dir, cfg, prefix = "", depth = 0) {
@@ -483,16 +516,16 @@ async function createBlock(cfg, itemId, blockType, fileId) {
 // `due` holds {row, handle, cfg} from every watched path. They share one
 // datalab, so one /info check and one item cache serve them all.
 async function attachPending(due) {
-  // With nothing to send no request is made, so an old outage no longer applies.
-  if (!due.length) { status.serverError = null; return; }
-
-  // A server outage is not each file's fault, so it costs no attempts.
-  try { await api(due[0].cfg, "GET", "/info"); status.serverError = null; }
+  // Every pass asks datalab, even with nothing to send, so the header says
+  // whether it answered at the last sync. An outage is not each file's
+  // fault, so it costs no attempts.
+  try { await api({ apiUrl: apiBase(global.apiUrl), apiKey: global.apiKey }, "GET", "/info"); status.serverError = null; }
   catch (e) {
     status.serverError = e.message;
-    log(`datalab unreachable, leaving ${due.length} file(s) pending: ${e.message}`, "warn");
+    log(`datalab unreachable${due.length ? `, leaving ${due.length} file(s) pending` : ""}: ${e.message}`, "warn");
     return;
   }
+  if (!due.length) return;
 
   log(`attaching ${due.length} file(s)`);
   const items = new Map();
@@ -620,43 +653,54 @@ const bytes = (n) => n == null ? "" :
   n < 1048576 ? (n / 1024).toFixed(0) + " KB" :
   n < 1073741824 ? (n / 1048576).toFixed(1) + " MB" : (n / 1073741824).toFixed(2) + " GB";
 const tile = (n, label, cls) =>
-  `<div class="tile ${cls || ""}"><div class="n">${n}</div><div class="l">${label}</div></div>`;
+  `<span class="tile ${cls || (n ? "" : "zero")}"><span class="n">${n}</span> <span class="l">${label}</span></span>`;
 const code = (s) => `<span class="mono">${esc(s)}</span>`;
 
 // One card per watched path, as on beholder's dashboard. The edit form is
 // built once here, so the 15-second refresh in render() never wipes a box
-// being typed in. render() fills only each card's .live part.
+// being typed in. render() fills only each card's summary and .live part.
+// The boxes run in rows on a wide screen: which path, which files, how a
+// file gets its item ID, and what is made for it.
 const WATCH_INPUTS = [
   ["name", "Name"],
   ["path", "Folder path from config.yaml (checks the folder you pick)"],
   ["itemType", "Item type for new items"],
   ["include", "Include patterns (comma separated)"],
   ["exclude", "Exclude patterns (comma separated)"],
+  ["maxDepth", "Max folder depth (blank for unlimited)", "number"],
   ["idPattern", "Item ID regexes, one per line (named group <code>item_id</code>)", "textarea"],
+  ["example", "Or build the regex from an example item ID", "example"],
   ["itemTemplate", "Item ID template"],
   ["collectionTemplate", "Collection ID template (blank for none)"],
   ["blockPatterns", "Block patterns (<code>glob=blocktype</code>, comma separated)"],
-  ["maxDepth", "Max folder depth (blank for unlimited)", "number"],
-].map(([k, label, kind]) => `<label>${label}${kind === "textarea"
+].map(([k, label, kind]) => `<label><span>${label}</span>${kind === "textarea"
   ? `<textarea name="${k}" rows="1" spellcheck="false"></textarea>`
+  : kind === "example"
+  ? `<span class="pair"><input name="${k}" placeholder="CEL-081" spellcheck="false"><button data-act="example">Build regex</button></span>`
   : `<input name="${k}"${kind === "number" ? ' type="number" min="0"' : ""}>`}</label>`).join("");
 function buildCards() {
   if (!watches.length) {
-    $("watches").innerHTML = `<div class="card empty">No watched paths. Load a config.yaml in
-      Datalab settings, or click Add watched path.</div>`;
+    $("watches").innerHTML = `<div class="card empty">No watched folders yet. Paste a config.yaml
+      under Datalab settings, or click Add folder.</div>`;
     return;
   }
+  // A card stays open or closed across a rebuild. A new one opens only when
+  // it has no folder yet, since choosing one is the next step.
+  const wasOpen = new Map([...document.querySelectorAll(".watch")].map((c) => [c.dataset.id, c.open]));
   $("watches").replaceChildren(...watches.map((w) => {
-    const card = document.createElement("div");
+    const card = document.createElement("details");
     card.className = "card watch";
     card.dataset.id = w.id;
     card.dataset.name = w.name;
-    card.innerHTML = `<div class="live"></div>
-      <details class="edit"><summary>Edit patterns</summary>
-        <div class="grid">${WATCH_INPUTS}</div>
-        <div class="actions"><button data-act="save">Save patterns</button>
-          <button data-act="remove">Remove this path</button></div>
-      </details>`;
+    card.open = wasOpen.get(w.id) ?? !ws(w.id).handle;
+    card.innerHTML = `<summary></summary><div class="live"></div>
+      <dialog class="edit"><h2></h2>
+        <div class="editor"><div class="grid">${WATCH_INPUTS}</div>
+          <div><div class="sec">Preview on the chosen folder</div><div class="preview"></div></div></div>
+        <div class="err dlgerr"></div>
+        <div class="actions"><button data-act="save">Save patterns</button><button data-act="cancel">Cancel</button>
+          <button data-act="remove" style="margin-left:auto">Remove this path</button></div>
+      </dialog>`;
     for (const k of WATCH_FIELDS) card.querySelector(`[name=${k}]`).value = w[k];
     return card;
   }));
@@ -690,29 +734,36 @@ function watchHtml(w, rows) {
     : st.error ? ["bad", "folder unreadable"]
     : st.root ? (stuck.length ? ["warn", stuck.length + " stuck"] : ["ok", "watching"])
     : st.handle ? ["warn", "needs access"] : ["", "no folder"];
-  let h = `<div class="cardhead"><h2>${esc(w.name || "unnamed")}</h2><span class="pill ${cls}">${word}</span></div>`;
+  // The summary answers which folder this is and how it is doing, so a list
+  // of closed cards still reads as an overview.
+  // A <summary> holds only phrasing content and headings, hence spans.
+  let s = `<span class="cardhead"><span class="chev">&#9654;</span><h2>${esc(w.name || "unnamed")}</h2>
+    <span class="pill ${cls}">${word}</span><span class="toggle"></span></span>`;
   const folder = st.root || st.handle;
-  h += `<div class="path">${folder ? `Folder ${esc(folder.name || "(unnamed)")}` : "No folder chosen"}`
-    + (w.path ? ` &middot; config path ${esc(w.path)}` : "") + `</div>`;
-  h += rulesHtml(w);
+  s += `<span class="path">${folder ? `Folder ${esc(folder.name || "(unnamed)")}` : "No folder chosen"}`
+    + (w.path ? ` &middot; config path ${esc(w.path)}` : "") + `</span>`;
+  if (st.root || rows.length) {
+    s += `<span class="tiles">
+      ${tile(rows.length - pending.length, "synced")}
+      ${tile(pending.length, "pending", pending.length ? "warn" : "")}
+      ${tile(stuck.length, "stuck", stuck.length ? "bad" : "")}
+      ${tile(st.unattachable || 0, "no item_id", st.unattachable ? "warn" : "")}
+      <span class="tile"><span class="l">last upload</span> <span class="n">${T(recent[0]?.lastSynced)}</span></span>
+    </span>`;
+  }
 
+  let h = "";
   if (st.patternError) h += `<div class="banner">This path was skipped because its patterns
     cannot be used: ${esc(st.patternError)}. Fix them under Edit patterns.</div>`;
   if (st.error) h += `<div class="banner">The last sync could not read this folder: ${esc(st.error)}.
     If it was moved or renamed, choose it again.</div>`;
   if (st.handle && !st.root) h += `<div class="banner warn">Chrome needs your permission again
-    before it can read this folder. Click Resume access to folder.</div>`;
+    before it can read this folder. Click Resume folder access at the top of the page.</div>`;
   if (st.folderWarning) h += `<div class="banner warn">${esc(st.folderWarning)}</div>`;
-  if (st.root || rows.length) {
-    h += `<div class="tiles">
-      ${tile(rows.length - pending.length, "synced")}
-      ${tile(pending.length, "pending", pending.length ? "warn" : "")}
-      ${tile(stuck.length, "stuck", stuck.length ? "bad" : "")}
-      ${tile(st.unattachable || 0, "no item_id", st.unattachable ? "warn" : "")}
-      <div class="tile"><div class="n" style="font-size:15px;padding-top:6px">${T(recent[0]?.lastSynced)}</div>
-        <div class="l">last upload</div></div>
-    </div>`;
-  }
+  const off = status.unsupported ? " disabled" : "";
+  h += `<div class="actions" style="margin:0 0 14px"><button data-act="pick"${off}>${st.root ? "Choose a different folder" : "Choose folder"}</button>`
+    + `<button data-act="edit">Edit patterns</button></div>`;
+  h += `<div class="sec">Rules</div>` + rulesHtml(w);
   if (st.unattachable) {
     h += `<div class="note">${st.unattachable} file(s) match the include patterns but no
       Item ID regex, so they will never upload. Check the regexes under Edit patterns.</div>`;
@@ -722,13 +773,16 @@ function watchHtml(w, rows) {
     // its backoff, so it goes on the next pass.
     h += `<div class="sec">Not uploading</div><div class="scroll"><table>
       <tr><th>File</th><th>Item</th><th>Attempts</th><th>Last failure</th><th>Next try</th><th>Error</th></tr>`;
-    for (const r of stuck) {
+    // The ten that have failed most often. A datalab refusing every upload
+    // would otherwise list the whole folder.
+    for (const r of stuck.slice(0, 10)) {
       h += `<tr><td class="mono">${esc(r.path)}</td><td class="mono">${esc(r.itemId)}</td>
         <td class="mono">${r.attempts}</td><td>${T(r.lastErrorAt)}</td>
         <td>${r.nextTry > Date.now() ? T(r.nextTry) : "next pass"}</td>
         <td class="err mono">${esc(r.lastError)}</td></tr>`;
     }
     h += `</table></div>`;
+    if (stuck.length > 10) h += `<div class="empty">and ${stuck.length - 10} more not uploading</div>`;
   }
   if (recent.length) {
     h += `<div class="sec">Recently uploaded</div><div class="scroll"><table class="recent">
@@ -739,10 +793,7 @@ function watchHtml(w, rows) {
     }
     h += `</table></div>`;
   }
-  const off = status.unsupported ? " disabled" : "";
-  h += `<div class="actions"><button data-act="pick"${off}>${st.root ? "Choose a different folder" : "Choose folder"}</button>`
-    + (st.handle && !st.root ? `<button data-act="resume">Resume access to folder</button>` : "") + `</div>`;
-  return h;
+  return [s, h];
 }
 
 async function render() {
@@ -761,17 +812,19 @@ async function render() {
   else if (!active().length) set("", "not started");
   else if (status.syncing) set("", "syncing");
   else if (status.serverError) set("bad", "datalab unreachable");
-  else if (failing) set("bad", `${failing} path${failing > 1 ? "s" : ""} failing`);
-  else if (idle) set("warn", `${idle} path${idle > 1 ? "s" : ""} not syncing`);
+  else if (failing) set("bad", `${failing} folder${failing > 1 ? "s" : ""} failing`);
+  else if (idle) set("warn", `${idle} folder${idle > 1 ? "s" : ""} not syncing`);
   else if (stuck) set("warn", stuck + " stuck");
   else set("ok", "running");
   $("syncNow").disabled = !active().length || status.syncing;
   $("syncNow").textContent = status.syncing ? "syncing" : "Sync now";
+  const waiting = watches.filter((w) => ws(w.id).handle && !ws(w.id).root).length;
+  $("resume").hidden = !waiting;
 
   const bits = [];
   const host = (() => { try { return new URL(global.apiUrl).host; } catch { return ""; } })();
   if (host) bits.push(esc(host));
-  bits.push(`${active().length} of ${watches.length} path${watches.length === 1 ? "" : "s"} syncing`);
+  bits.push(`${active().length} of ${watches.length} folder${watches.length === 1 ? "" : "s"} syncing`);
   if (active().length && status.nextAt) bits.push("next sync " + ago(status.nextAt));
   if (status.lastPassAt) bits.push("last sync " + ago(status.lastPassAt));
   bits.push("runs only while this tab is open");
@@ -786,7 +839,16 @@ async function render() {
 
   for (const card of document.querySelectorAll(".watch")) {
     const w = watchOf(card.dataset.id);
-    if (w) card.querySelector(".live").innerHTML = watchHtml(w, byWatch.get(w.id));
+    if (!w) continue;
+    const [summary, body] = watchHtml(w, byWatch.get(w.id));
+    card.querySelector("summary").innerHTML = summary;
+    card.querySelector(".live").innerHTML = body;
+    // A card opens once when it starts failing, so its reason is in view.
+    // The user can close it again.
+    const st = ws(w.id);
+    const failing = !!(st.error || st.patternError || byWatch.get(w.id).some((r) => isPending(r) && r.attempts > 0));
+    if (failing && !st.shownFailing) card.open = true;
+    st.shownFailing = failing;
   }
   $("foot").textContent = "updated " + new Date().toLocaleTimeString();
 }
@@ -890,7 +952,103 @@ async function useFolder(id, handle, { sync = true } = {}) {
   else await render();
 }
 
+// Lists files in the folder with the item ID each would get under the rules
+// in the edit form, before they are saved. Files with no ID come first, since
+// they are what needs fixing. Only the first PREVIEW_MAX files are walked.
+const PREVIEW_MAX = 2000;
+const previewTimers = new Map();
+function previewSoon(card) {
+  if (!card.querySelector(".edit").open) return;
+  clearTimeout(previewTimers.get(card.dataset.id));
+  previewTimers.set(card.dataset.id, setTimeout(() => preview(card), 400));
+}
+async function preview(card) {
+  const out = card.querySelector(".preview");
+  const st = ws(card.dataset.id);
+  // Each call outdates the ones before, so a walk still running for older
+  // patterns stops and does not overwrite what this one shows.
+  const seq = card.dataset.previewSeq = String(Number(card.dataset.previewSeq || 0) + 1);
+  const stale = () => card.dataset.previewSeq !== seq;
+  if (!st.root) {
+    out.innerHTML = `<div class="empty">${st.handle ? "Resume folder access" : "Choose a folder"}
+      to see the item ID each file gets.</div>`;
+    return;
+  }
+  let cfg;
+  try { cfg = compileSettings({ ...global, ...readWatch(card) }); }
+  catch (e) { out.innerHTML = `<div class="err">These patterns cannot be used: ${esc(e.message)}</div>`; return; }
+  const files = [];
+  let problem = null;
+  try {
+    for await (const [rel] of walk(st.root, cfg)) {
+      if (stale()) return;
+      files.push([rel, idsFor(cfg, rel, (msg) => { problem = msg; })]);
+      if (files.length >= PREVIEW_MAX) break;
+    }
+  } catch (e) { problem = `could not read the folder: ${e.message}`; }
+  if (stale()) return;
+
+  const missing = files.filter(([, ids]) => !ids);
+  const shown = missing.slice(0, 5);
+  shown.push(...files.filter(([, ids]) => ids).slice(0, 10 - shown.length));
+  let h = `<div>${files.length}${files.length >= PREVIEW_MAX ? "+" : ""} file(s) match the include patterns. `
+    + (!files.length ? "" : missing.length
+      ? `<span class="err">${missing.length} ${missing.length === 1 ? "gets" : "get"} no item ID and would not upload.</span>`
+      : `<span class="okc">Every one gets an item ID.</span>`) + `</div>`;
+  // The table shows only a few files, so a wrong ID taken from some of them,
+  // such as a channel number, could hide. The distinct IDs in sort order put
+  // such outliers at the ends of the list.
+  const distinct = [...new Set(files.map(([, ids]) => ids?.item_id).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  if (distinct.length) {
+    const lens = distinct.map((x) => x.length);
+    const list = distinct.length <= 8 ? distinct
+      : [...distinct.slice(0, 4), "…", ...distinct.slice(-4)];
+    h += `<div>${distinct.length} distinct item ID${distinct.length === 1 ? "" : "s"}: `
+      + list.map((x) => x === "…" ? x : code(x)).join(", ")
+      + `. ${Math.min(...lens) === Math.max(...lens) ? `All ${lens[0]}` : `${Math.min(...lens)} to ${Math.max(...lens)}`} characters long.</div>`;
+  }
+  if (problem) h += `<div class="err">${esc(problem)}</div>`;
+  if (shown.length) {
+    h += `<div class="scroll"><table><tr><th>File</th><th>Item ID</th>${cfg.collectionTemplate ? "<th>Collection</th>" : ""}</tr>`;
+    for (const [rel, ids] of shown) {
+      h += `<tr><td class="mono">${esc(rel)}</td>`
+        + `<td class="mono">${ids ? esc(ids.item_id) : '<span class="err">no item ID</span>'}</td>`
+        + (cfg.collectionTemplate ? `<td class="mono">${esc(ids?.collection_id)}</td>` : "") + `</tr>`;
+    }
+    h += `</table></div>`;
+  }
+  out.innerHTML = h;
+}
+
 const actions = {
+  // Opens the editor with the saved patterns, so edits abandoned by Cancel
+  // or Escape do not come back.
+  async edit(w, card) {
+    for (const k of WATCH_FIELDS) card.querySelector(`[name=${k}]`).value = w[k];
+    card.querySelector("[name=example]").value = "";
+    card.querySelector(".dlgerr").textContent = "";
+    card.querySelector(".edit h2").textContent = `Edit patterns for ${w.name}`;
+    card.querySelector(".edit").showModal();
+    await preview(card);
+  },
+  async cancel(w, card) { card.querySelector(".edit").close(); },
+  async example(w, card) {
+    const ex = card.querySelector("[name=example]").value;
+    if (!ex.trim()) return;
+    // Digits alone become [0-9]+, which takes the first number anywhere in
+    // the path, such as a channel number. Letters alone match one fixed
+    // string, so every file would go to one item. Either makes wrong items.
+    const msg = card.querySelector(".dlgerr");
+    if (!/[a-z]/i.test(ex) || !/\d/.test(ex)) {
+      msg.textContent = "The example needs letters and a number, such as CEL-081, for the page to find " +
+        "IDs like it in file names. For any other kind of ID, write the regex by hand.";
+      return;
+    }
+    msg.textContent = "";
+    card.querySelector("[name=idPattern]").value = idRegexFromExample(ex);
+    await preview(card);
+  },
   async pick(w) {
     let handle;
     // The browser remembers the last folder picked under each id, and that
@@ -901,24 +1059,20 @@ const actions = {
     await kvSet("folder:" + w.id, handle);
     await useFolder(w.id, handle);
   },
-  async resume(w) {
-    const { handle } = ws(w.id);
-    if ((await handle.requestPermission({ mode: "read" })) === "granted") await useFolder(w.id, handle);
-  },
   async save(w, card) {
     const fields = readWatch(card);
     try {
       if (!fields.name) throw new Error("the path needs a name");
       if (watches.some((o) => o !== w && o.name === fields.name)) throw new Error(`another path is already named ${fields.name}`);
       compileSettings({ ...global, ...fields });
-    } catch (e) { setProblem(`Patterns for ${w.name} not saved: ${e.message}`); return; }
+    } catch (e) { card.querySelector(".dlgerr").textContent = `Not saved: ${e.message}.`; return; }
     Object.assign(w, fields);
     card.dataset.name = w.name;
     await saveWatches();
     const st = ws(w.id);
     if (st.root) st.folderWarning = folderWarning(st.root.name, w.path);
     log(`${w.name}: patterns saved`);
-    status.problem = null;
+    card.querySelector(".edit").close();
     await render();
   },
   async remove(w) {
@@ -933,8 +1087,14 @@ const actions = {
 $("watches").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-act]");
   const card = b?.closest(".watch");
-  if (card) actions[b.dataset.act](watchOf(card.dataset.id), card)
+  if (!card) return;
+  actions[b.dataset.act](watchOf(card.dataset.id), card)
     .catch((err) => { log(`${b.textContent} failed: ${err.message}`, "bad"); setProblem(`${b.textContent} failed: ${err.message}`); });
+});
+// The preview follows the edit form as it is typed in.
+$("watches").addEventListener("input", (e) => {
+  const card = e.target.closest(".watch");
+  if (card && e.target.closest(".edit") && e.target.name !== "example") previewSoon(card);
 });
 $("addWatch").onclick = async () => {
   let n = watches.length + 1;
@@ -942,10 +1102,38 @@ $("addWatch").onclick = async () => {
   watches.push({ ...DEFAULT_WATCH, id: newId(), name: `path ${n}` });
   await saveWatches();
   buildCards();
-  document.querySelector(".watch:last-child .edit").open = true;
+  const card = document.querySelector(".watch:last-child");
+  card.open = true;
   await render();
+  await actions.edit(watchOf(card.dataset.id), card);
 };
 $("syncNow").onclick = () => syncOnce({ now: true });
+// Asks again for every folder whose permission lapsed with the last browser
+// session. Chrome's prompt may restore several at once, so each is checked
+// before it is asked. If Chrome refuses a second prompt from one click, the
+// button stays up for the folders left, and the next click asks for those.
+$("resume").onclick = async () => {
+  let resumed = false;
+  try {
+    for (const w of watches) {
+      const { handle, root } = ws(w.id);
+      if (!handle || root) continue;
+      let p = await handle.queryPermission({ mode: "read" });
+      if (p !== "granted") {
+        try { p = await handle.requestPermission({ mode: "read" }); }
+        catch (e) {
+          // Chrome refuses a second prompt from one click with a SecurityError.
+          // Any other error belongs to this folder, so the rest are still asked.
+          if (e.name === "SecurityError") { log("Chrome needs another click on Resume folder access for the other folders"); break; }
+          log(`${w.name}: access not resumed: ${e.message}. Choose the folder again.`, "warn");
+          continue;
+        }
+      }
+      if (p === "granted") { await useFolder(w.id, handle, { sync: false }); resumed = true; }
+    }
+  } catch (e) { log(`Resume folder access failed: ${e.message}`, "bad"); setProblem(`Resume folder access failed: ${e.message}`); }
+  if (resumed) await syncOnce();
+};
 $("save").onclick = async () => {
   const s = Object.fromEntries(FIELDS.map((k) => [k, $(k).value.trim()]));
   try { if (!/^https?:$/.test(new URL(s.apiUrl).protocol)) throw 0; }
@@ -961,6 +1149,10 @@ $("save").onclick = async () => {
 $("loadYaml").onclick = async () => {
   try {
     const { cfg, skipped } = loadYamlLenient($("yaml").value);
+    // A file name, a path or an empty box parses as a string or nothing.
+    if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+      throw new Error("the box does not hold a config. Paste the text inside config.yaml, not its file name or path");
+    }
     const { s, dl, paths, watches: incoming, datalabChoices } = settingsFromConfig(cfg, $("datalabName").value);
     for (const w of incoming) {
       try { compileSettings({ ...global, ...s, ...w }); }
@@ -1033,26 +1225,31 @@ const windowsPathHint = (skipped) => skipped.some((k) => /escape sequence|hexade
 
 (async () => {
   await loadState();
-  buildCards();
   $("settings").open = !global.apiKey;
   // Keeps the "ago" times current between syncs, as the dashboard's poll does.
   setInterval(render, 15_000);
   if (!window.showDirectoryPicker) {
     status.unsupported = true;
+    buildCards();
     await render();
     return;
   }
   // The grant survives a restart only if the user chose "Allow on every visit".
   // Every folder that kept it joins before the first pass, so one pass covers all.
   let resumed = false;
+  // One stored folder that cannot be read back must not hide the others.
   for (const w of watches) {
-    const handle = await kvGet("folder:" + w.id);
-    if (!handle) continue;
-    if ((await handle.queryPermission({ mode: "read" })) === "granted") {
-      await useFolder(w.id, handle, { sync: false });
-      resumed = true;
-    } else ws(w.id).handle = handle;
+    try {
+      const handle = await kvGet("folder:" + w.id);
+      if (!handle) continue;
+      if ((await handle.queryPermission({ mode: "read" })) === "granted") {
+        await useFolder(w.id, handle, { sync: false });
+        resumed = true;
+      } else ws(w.id).handle = handle;
+    } catch (e) { log(`${w.name}: the stored folder could not be restored: ${e.message}. Choose it again.`, "warn"); }
   }
+  // Built once the stored folders are known, so only cards without one open.
+  buildCards();
   if (resumed) await syncOnce();
   else await render();
 })();

@@ -21,8 +21,6 @@ from functools import partial
 from http.server import HTTPServer, SimpleHTTPRequestHandler, BaseHTTPRequestHandler
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-
 HERE = Path(__file__).parent
 
 
@@ -272,6 +270,9 @@ V1_SETUP = """async (apiUrl) => {
 
 
 def main():
+    # Imported here so that demo.py can reuse the mock without Playwright.
+    from playwright.sync_api import sync_playwright
+
     api = serve(ApiHandler)
     page_srv = serve(partial(SimpleHTTPRequestHandler, directory=str(HERE)))
     api_url = f"http://127.0.0.1:{api.server_port}/api"
@@ -373,6 +374,15 @@ def main():
         page.click("#loadYaml")
         page.wait_for_function("document.querySelector('#banners').innerText === ''")
 
+        # A path pasted in place of the file's text says so.
+        page.fill("#yaml", "/Users/me/Desktop/config.yaml")
+        page.click("#loadYaml")
+        page.wait_for_function("document.querySelector('#banners').innerText.includes('not its file name')")
+        check("a pasted path is named as the mistake", cards() == ["sycamore", "eis"], cards())
+        page.fill("#yaml", good_yaml)
+        page.click("#loadYaml")
+        page.wait_for_function("document.querySelector('#banners').innerText === ''")
+
         # A regex the browser cannot compile stops the load before anything changes.
         page.fill("#yaml", good_yaml.replace('id_patterns: [".*(?P<item_id>CEL-[0-9]{3,5}).*"]',
                                              'id_patterns: ["(?i)(?P<item_id>CEL-[0-9]+)"]'))
@@ -385,13 +395,16 @@ def main():
         page.click("#loadYaml")
         page.wait_for_function("document.querySelector('#banners').innerText === ''")
 
-        card("sycamore").locator(".edit summary").click()
+        card("sycamore").locator("[data-act=edit]").click()
         card("sycamore").locator("[name=name]").fill("")
         card("sycamore").locator("[data-act=save]").click()
-        page.wait_for_function("document.querySelector('#banners').innerText.includes('needs a name')")
+        page.wait_for_function("""document.querySelector('.watch[data-name="sycamore"] .dlgerr')
+                                  .textContent.includes('needs a name')""")
         check("a path cannot be saved without a name", cards() == ["sycamore", "eis"], cards())
-        card("sycamore").locator("[name=name]").fill("sycamore")
-        card("sycamore").locator(".edit summary").click()
+        card("sycamore").locator("[data-act=cancel]").click()
+        card("sycamore").locator("[data-act=edit]").click()
+        check("Cancel drops unsaved edits", card("sycamore").locator("[name=name]").input_value() == "sycamore")
+        card("sycamore").locator("[data-act=cancel]").click()
 
         # BEHOLDER_CONFIG=path/to/config.yaml checks that a real config maps
         # too. Only the mapping runs, so no request reaches its server.
@@ -427,7 +440,7 @@ def main():
         write({"eis/CEL-0003 eis.mpr": "e1"})
         page.evaluate("""async () => { const root = await navigator.storage.getDirectory();
           await beholder.useFolder(beholder.watchId('eis'), await root.getDirectoryHandle('eis'), {sync: false}) }""")
-        check("a path without a folder shows in the header pill", pill() == "1 path not syncing", pill())
+        check("a path without a folder shows in the header pill", pill() == "1 folder not syncing", pill())
         write({
             "CEL-001 run a.ndax": "a1",
             "sub/CEL-001_b.ndax": "b1",
@@ -463,10 +476,54 @@ def main():
               card("sycamore").locator("table.recent tr").count() == 4)
         check("status: no-item_id note explains itself", "never upload" in card("sycamore").inner_text())
 
+        # 1b. An example ID writes the regex, and the preview shows what each
+        # file in the folder would get, the file with no ID first.
+        c = card("sycamore")
+        c.locator("[data-act=edit]").click()
+        saved_regex = c.locator("[name=idPattern]").input_value()
+        c.locator("[name=example]").fill("0001")
+        c.locator("[data-act=example]").click()
+        check("an example of digits alone is refused and leaves the regex",
+              "needs letters and a number" in c.locator(".dlgerr").inner_text()
+              and c.locator("[name=idPattern]").input_value() == saved_regex,
+              c.locator(".dlgerr").inner_text())
+        c.locator("[name=example]").fill("CEL")
+        c.locator("[data-act=example]").click()
+        check("an example of letters alone is refused too",
+              "needs letters and a number" in c.locator(".dlgerr").inner_text()
+              and c.locator("[name=idPattern]").input_value() == saved_regex)
+        c.locator("[name=example]").fill("CEL-0001")
+        c.locator("[data-act=example]").click()
+        page.wait_for_function("""document.querySelector('.watch[data-name="sycamore"] .preview')
+                                  .innerText.includes('match the include')""")
+        prev = c.locator(".preview").inner_text()
+        check("an example ID writes a regex beholder accepts",
+              c.locator("[name=idPattern]").input_value() == "(?P<item_id>CEL-[0-9]+)",
+              c.locator("[name=idPattern]").input_value())
+        check("the preview counts files and flags the one with no ID first",
+              "4 file(s) match" in prev and "1 gets no item ID" in prev
+              and c.locator(".preview tr").nth(1).inner_text().startswith("no-id.ndax")
+              and "CEL-0002" in prev, prev)
+        check("the preview lists the distinct IDs in order, with their lengths",
+              "2 distinct item IDs: CEL-001, CEL-0002. 7 to 8 characters long." in prev, prev)
+        c.locator("[name=idPattern]").fill("(?P<item_id>[")
+        page.wait_for_function("""document.querySelector('.watch[data-name="sycamore"] .preview')
+                                  .innerText.includes('cannot be used')""")
+        check("the preview follows typing and names a broken regex", True)
+        c.locator("[data-act=cancel]").click()
+
         # 2. Nothing changed: no uploads, no server lookups beyond nothing.
         sync()
         check("unchanged folder uploads nothing", uploads() == [], uploads())
-        check("unchanged folder makes no requests", MOCK.calls == [], MOCK.calls)
+        check("unchanged folder only asks datalab whether it is up",
+              MOCK.calls == [("GET", "/info")], MOCK.calls)
+        MOCK.down = True
+        sync()
+        down = pill()
+        MOCK.down = False
+        sync()
+        check("an outage shows with nothing to upload, and clears", (down, pill()) == ("datalab unreachable", "running"),
+              (down, pill()))
 
         # 3. A file grows: replace in place, keep its id, no second block.
         def file_a():
@@ -551,7 +608,7 @@ def main():
 
         # 7b. Removing a path forgets its rows and card and leaves the others.
         page.once("dialog", lambda d: d.accept())
-        card("potentiostat").locator(".edit summary").click()
+        card("potentiostat").locator("[data-act=edit]").click()
         card("potentiostat").locator("[data-act=remove]").click()
         wait_cards(["sycamore"])
         check("removed path loses its rows, others keep theirs",
