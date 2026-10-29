@@ -10,14 +10,15 @@ The page runs in Chrome or Edge and syncs while its tab is open.
 1. Open https://lightningtree-ai.github.io/beholder-sync/beholder-sync.html in Chrome or Edge.
    Opening a downloaded copy of `beholder-sync.html` from disk also loads, but folder access from a local file has not been tested.
 2. Open **Datalab settings**. Paste a beholder `config.yaml` into the top box and click **Load config**.
-   Each watched path in the config gets a card of its own.
-   Without a config, fill in the boxes by hand and click **Add watched path** for each folder.
+   Each watched path in the config appears under **Watched folders**.
+   Without a config, fill in the boxes by hand and click **Add folder** for each folder.
    Get an API key from `<your datalab URL>/get-api-key` if the config has none.
    If a line does not parse, the rest of the config still loads, and a banner names the line.
    Write Windows paths in single quotes, such as `path: 'C:\Users\me\data'`.
-3. On each card, click **Choose folder** and pick the folder that instrument writes to.
+3. On each watched folder, click **Choose folder** and pick the folder that instrument writes to.
    When Chrome asks about folder access, choose **Allow on every visit**.
-   Otherwise each card needs a click on **Resume access to folder** after every browser restart.
+   Otherwise you need to click **Resume folder access**, next to the page title, after every browser restart.
+   Chrome may ask once per folder.
 4. Leave the tab open.
 
 The page syncs once when you pick a folder, then every `sync.metadata_interval` seconds from the config (20 minutes by default).
@@ -41,13 +42,39 @@ For each new or changed file it:
 These are the same API calls, in the same order, that datalab-beholder makes.
 Patterns follow beholder's rules: globs match the file name without regard to case, and ID regexes can use Python's `(?P<name>...)` syntax.
 
-Each watched path has a card, as on beholder's own dashboard.
-The card lists the path's rules, and counts its files that are synced, pending, stuck, or have no item ID.
-Below the counts are its failing files with their errors and its ten most recent uploads.
-**Edit patterns** on the card changes that path's rules.
-The pill at the top sums the cards and shows the worst state.
+## Writing the item ID rule
+
+The item ID regex picks the part of a file's path that names its datalab item.
+**Edit patterns** on a folder's row opens a window with that path's rules, and offers two aids for writing the regex.
+
+Type one item ID in the box beside the regex, such as `CEL-081`, and click **Build regex**.
+The regex box then holds a regex that matches the ID's text as typed, with any number in place of each run of digits.
+It replaces what the box held before. Nothing is saved until **Save patterns**.
+For `CEL-081` that is `(?P<item_id>CEL-[0-9]+)`, which finds `CEL-9999` in `253_CEL-9999-1_4_9.ndax`.
+The page refuses an example that is not letters plus a number. Digits alone would give `[0-9]+`, which takes the first number anywhere in the path, such as a channel number. Letters alone would send every file to one item.
+
+Beside the boxes, a preview lists files from the chosen folder with the item ID each would get.
+Files that get none come first, in red.
+Above the list, the distinct IDs found are shown in sort order, so a wrong one such as `253` stands out at an end.
+The preview follows the boxes as you type, before you save.
+**Cancel** or Escape closes the window and drops what was not saved.
+
+For IDs that are not text plus a number, an AI assistant such as Claude or ChatGPT can write the regex.
+Give it three file names and the ID in each, and ask for a Python regex with a named group `item_id`.
+Paste the answer into the regex box and check it in the preview.
+Assistants often get this kind of regex wrong, because the ID is only part of the name, so check every time.
+
+Each watched path has a row under **Watched folders**.
+The row shows the path's name, its state, the folder chosen for it, and counts of its files that are synced, pending, stuck, or have no item ID.
+**Show details** opens the row.
+Inside are its rules, its failing files with their errors, and its ten most recent uploads.
+A long list of failing files shows the ten that failed most often, and a count of the rest.
+A row opens by itself while it has no folder, and again when it starts failing.
+The pill at the top sums the rows and shows the worst state.
 A failed upload is retried after 1, 2, 4 and so on up to 60 minutes.
-A pass where datalab does not answer at all leaves files pending without counting a failure.
+Each pass asks datalab whether it is up, even with nothing to upload, so **running** means it answered at the last sync.
+A pass where datalab does not answer at all shows **datalab unreachable** and leaves files pending without counting a failure.
+That check does not test the API key. A wrong key shows as uploads that fail.
 
 ## Limitations
 
@@ -66,6 +93,19 @@ A pass where datalab does not answer at all leaves files pending without countin
 - Chrome or Edge, version 122 or later for the persistent folder permission.
 - A datalab server whose API sends `Access-Control-Allow-Origin` for the page's origin. datalab's API sends `*`.
 - Network access to `cdnjs.cloudflare.com`, which serves the YAML parser. Syncing works without it. Only **Load config** needs it.
+
+## Trying it out
+
+`demo.py` runs the page against a mock datalab on this computer, so nothing reaches a real server.
+
+```
+python3 demo.py
+```
+
+It fills `~/Desktop/beholder-demo` with cycler and EIS files, some with awkward names, and writes a `config.yaml` for them. On a Mac it also puts the config text on the clipboard, ready to paste into **Datalab settings**.
+It prints the steps, and a line for each change the page makes on the mock datalab.
+Type `f` and Enter to make uploads fail, `d` to make datalab stop answering, and `q` to quit.
+The mock forgets everything when the script stops.
 
 ## Testing
 
