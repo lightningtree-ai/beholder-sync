@@ -72,9 +72,11 @@ A long list of failing files shows the ten that failed most often, and a count o
 A row opens by itself while it has no folder, and again when it starts failing.
 The pill at the top sums the rows and shows the worst state.
 A failed upload is retried after 1, 2, 4 and so on up to 60 minutes.
-Each pass asks datalab whether it is up, even with nothing to upload, so **running** means it answered at the last sync.
-A pass where datalab does not answer at all shows **datalab unreachable** and leaves files pending without counting a failure.
-That check does not test the API key. A wrong key shows as uploads that fail.
+Each pass asks datalab who the API key belongs to, even with nothing to upload.
+**running** means datalab answered and accepted the key at the last sync.
+A pass where datalab does not answer shows **datalab unreachable**.
+A pass where it refuses the key shows **API key rejected**.
+Both leave files pending without counting a failure.
 
 ## Limitations
 

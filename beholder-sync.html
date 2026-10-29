@@ -514,15 +514,20 @@ async function createBlock(cfg, itemId, blockType, fileId) {
 
 // ------------------------------------------------------------------- sync
 // `due` holds {row, handle, cfg} from every watched path. They share one
-// datalab, so one /info check and one item cache serve them all.
+// datalab, so one check of the server and key and one item cache serve them all.
 async function attachPending(due) {
-  // Every pass asks datalab, even with nothing to send, so the header says
-  // whether it answered at the last sync. An outage is not each file's
-  // fault, so it costs no attempts.
-  try { await api({ apiUrl: apiBase(global.apiUrl), apiKey: global.apiKey }, "GET", "/info"); status.serverError = null; }
-  catch (e) {
-    status.serverError = e.message;
-    log(`datalab unreachable${due.length ? `, leaving ${due.length} file(s) pending` : ""}: ${e.message}`, "warn");
+  // Every pass asks datalab who the key belongs to, even with nothing to
+  // send, so the header says whether it answered and accepted the key at the
+  // last sync. Neither an outage nor a bad key is each file's fault, so
+  // they cost no attempts.
+  try {
+    await api({ apiUrl: apiBase(global.apiUrl), apiKey: global.apiKey }, "GET", "/get-current-user/");
+    Object.assign(status, { serverError: null, keyRejected: false });
+  } catch (e) {
+    const keyRejected = e.status === 401 || e.status === 403;
+    Object.assign(status, { serverError: e.message, keyRejected });
+    const what = keyRejected ? "datalab refused the API key" : "datalab unreachable";
+    log(`${what}${due.length ? `, leaving ${due.length} file(s) pending` : ""}: ${e.message}`, "warn");
     return;
   }
   if (!due.length) return;
@@ -583,8 +588,9 @@ let timer = null;
 let global = { ...DEFAULTS };
 let watches = [];
 // What the page knows beyond the stored rows. `problem` is a banner about
-// setup (no key, invalid settings); `serverError` is the last failed /info.
-const status = { syncing: false, problem: null, serverError: null,
+// setup (no key, invalid settings); `serverError` is the last failed check of
+// datalab, and `keyRejected` says the server answered but refused the key.
+const status = { syncing: false, problem: null, serverError: null, keyRejected: false,
                  lastPassAt: null, nextAt: null, unsupported: false };
 // Per watched path: `root` is the folder being read, `handle` one stored but
 // awaiting permission, and `error` why the last scan of it failed.
@@ -811,6 +817,7 @@ async function render() {
   if (status.unsupported) set("bad", "unsupported browser");
   else if (!active().length) set("", "not started");
   else if (status.syncing) set("", "syncing");
+  else if (status.keyRejected) set("bad", "API key rejected");
   else if (status.serverError) set("bad", "datalab unreachable");
   else if (failing) set("bad", `${failing} folder${failing > 1 ? "s" : ""} failing`);
   else if (idle) set("warn", `${idle} folder${idle > 1 ? "s" : ""} not syncing`);
@@ -833,7 +840,9 @@ async function render() {
   let b = "";
   if (status.unsupported) b += `<div class="banner">This browser cannot read folders. Open this page in Chrome or Edge.</div>`;
   if (status.problem) b += `<div class="banner warn">${esc(status.problem)}</div>`;
-  if (status.serverError) b += `<div class="banner">datalab did not answer on the last sync, so no
+  if (status.keyRejected) b += `<div class="banner">datalab refused the API key on the last sync, so no
+    files were uploaded and none were counted as failed. Check the key in Datalab settings: ${esc(status.serverError)}</div>`;
+  else if (status.serverError) b += `<div class="banner">datalab did not answer on the last sync, so no
     files were uploaded and none were counted as failed: ${esc(status.serverError)}</div>`;
   $("banners").innerHTML = b;
 
