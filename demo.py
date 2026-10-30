@@ -53,7 +53,7 @@ watched_paths:
     datalab: "demo"
     item_type: "cells"
     include_patterns: ["*.ndax"]
-    id_patterns: [".*(?P<item_id>CEL-[0-9]{{3,5}}).*"]
+    id_patterns: [".*(?P<item_id>CEL-[0-9]+).*"]
     collection_id_template: "DEMO"
     block_patterns: {{"*.ndax": "cycle"}}
   - name: "eis"
@@ -61,7 +61,7 @@ watched_paths:
     datalab: "demo"
     item_type: "cells"
     include_patterns: ["*.mpr"]
-    id_patterns: [".*(?P<item_id>CEL-[0-9]{{3,5}}).*"]
+    id_patterns: [".*(?P<item_id>CEL-[0-9]+).*"]
     block_patterns: {{"*.mpr": "eis"}}
 sync:
   metadata_interval: 1200
@@ -108,7 +108,7 @@ Demo files are in {FOLDER}.
 2. Open Datalab settings and paste the text of the config above into the top box.
    {where} Then click Load config.
 3. Click Show details on each row, then Choose folder: beholder-demo/cycler and beholder-demo/eis.
-4. Open Edit patterns on the cycler row and try the example box and the preview.
+4. Open Edit patterns on the cycler row and try the prefix box and the preview.
 
 While this runs, type a letter here and press Enter:
   f   datalab refuses every upload, or accepts them again

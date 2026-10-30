@@ -481,29 +481,18 @@ def main():
               card("sycamore").locator("table.recent tr").count() == 4)
         check("status: no-item_id note explains itself", "never upload" in card("sycamore").inner_text())
 
-        # 1b. An example ID writes the regex, and the preview shows what each
-        # file in the folder would get, the file with no ID first.
+        # 1b. A list of prefixes writes the regex, and the preview shows what
+        # each file in the folder would get, the file with no ID first.
         c = card("sycamore")
         c.locator("[data-act=edit]").click()
-        saved_regex = c.locator("[name=idPattern]").input_value()
-        c.locator("[name=example]").fill("0001")
-        c.locator("[data-act=example]").click()
-        check("an example of digits alone is refused and leaves the regex",
-              "needs letters and a number" in c.locator(".dlgerr").inner_text()
-              and c.locator("[name=idPattern]").input_value() == saved_regex,
-              c.locator(".dlgerr").inner_text())
-        c.locator("[name=example]").fill("CEL")
-        c.locator("[data-act=example]").click()
-        check("an example of letters alone is refused too",
-              "needs letters and a number" in c.locator(".dlgerr").inner_text()
-              and c.locator("[name=idPattern]").input_value() == saved_regex)
-        c.locator("[name=example]").fill("CEL-0001")
-        c.locator("[data-act=example]").click()
+        check("the prefix box shows the prefix of the saved regex",
+              c.locator("[name=prefixes]").input_value() == "CEL", c.locator("[name=prefixes]").input_value())
+        c.locator("[name=prefixes]").fill("CEL, ICP6, APC2")
         page.wait_for_function("""document.querySelector('.watch[data-name="sycamore"] .preview')
                                   .innerText.includes('match the include')""")
         prev = c.locator(".preview").inner_text()
-        check("an example ID writes a regex beholder accepts",
-              c.locator("[name=idPattern]").input_value() == "(?P<item_id>CEL-[0-9]+)",
+        check("prefixes rewrite the regex and keep its digit count",
+              c.locator("[name=idPattern]").input_value() == ".*(?P<item_id>(?:CEL|ICP6|APC2)-[0-9]{3,5}).*",
               c.locator("[name=idPattern]").input_value())
         check("the preview counts files and flags the one with no ID first",
               "4 file(s) match" in prev and "1 gets no item ID" in prev
@@ -515,6 +504,12 @@ def main():
         page.wait_for_function("""document.querySelector('.watch[data-name="sycamore"] .preview')
                                   .innerText.includes('cannot be used')""")
         check("the preview follows typing and names a broken regex", True)
+        check("a regex the prefix box cannot read blanks it",
+              c.locator("[name=prefixes]").input_value() == "")
+        c.locator("[name=prefixes]").fill("ICP")
+        check("prefixes replace a regex written by hand with a plain one",
+              c.locator("[name=idPattern]").input_value() == "(?P<item_id>ICP-[0-9]+)",
+              c.locator("[name=idPattern]").input_value())
         c.locator("[data-act=cancel]").click()
 
         # 2. Nothing changed: no uploads, no server lookups beyond nothing.
@@ -642,6 +637,11 @@ def main():
             none: beholder.idsFor(cfg, 'CEL-1.ndax'),
             second: beholder.idsFor(beholder.compileSettings({...cfg0, idPattern: 'XX(?P<item_id>Z)\\n(?P<item_id>BAT-[0-9]+)'}), 'BAT-77.ndax')?.item_id,
             unlimited: beholder.compileSettings({...cfg0, maxDepth: ''}).maxDepth,
+            prefixed: ['ICP6-12_run.ndax', 'b/253_ICP-0040-1.ndax', 'APC2-7.ndax', 'ICP62-5.ndax'].map((f) =>
+              beholder.idsFor(beholder.compileSettings({...cfg0,
+                idPattern: beholder.idRegexFromPrefixes(['ICP', 'ICP6', 'APC2'])}), f)?.item_id ?? null),
+            handWritten: beholder.prefixesOfRegex('(?P<item_id>[A-Z]{3}-[0-9]+)'),
+            twoLines: beholder.prefixesOfRegex('(?P<item_id>CEL-[0-9]+)\\n(?P<item_id>ICP-[0-9]+)'),
           };
         }""")
         check("globs ignore case", cases["upper"])
@@ -649,6 +649,10 @@ def main():
         check("greedy regex takes the last ID in the path", cases["lastRun"] == "CEL-0042", cases)
         check("no match gives no item", cases["none"] is None, cases)
         check("second regex line is tried", cases["second"] == "BAT-77", cases)
+        check("prefix regex finds each prefix, the longer one too",
+              cases["prefixed"] == ["ICP6-12", "ICP-0040", "APC2-7", None], cases["prefixed"])
+        check("the prefix box reads only regexes it could have written",
+              cases["handWritten"] is None and cases["twoLines"] is None, cases)
         hints = page.evaluate(r"""() => ({
           sycamore: beholder.folderHints('C://Users/Cycler/Desktop/data'),
           backslash: beholder.folderHints(String.raw`C:\Users\x\Documents\runs\2026`),

@@ -47,11 +47,12 @@ Patterns follow beholder's rules: globs match the file name without regard to ca
 The item ID regex picks the part of a file's path that names its datalab item.
 **Edit patterns** on a folder's row opens a window with that path's rules, and offers two aids for writing the regex.
 
-Type one item ID in the box beside the regex, such as `CEL-081`, and click **Build regex**.
-The regex box then holds a regex that matches the ID's text as typed, with any number in place of each run of digits.
-It replaces what the box held before. Nothing is saved until **Save patterns**.
-For `CEL-081` that is `(?P<item_id>CEL-[0-9]+)`, which finds `CEL-9999` in `253_CEL-9999-1_4_9.ndax`.
-The page refuses an example that is not letters plus a number. Digits alone would give `[0-9]+`, which takes the first number anywhere in the path, such as a channel number. Letters alone would send every file to one item.
+Item IDs are usually a short prefix, a dash and a number, such as `CEL-081` or `ICP6-12`.
+Type the prefixes in the **Item ID prefixes** box, separated by commas, such as `CEL, ICP, ICP6, APC2`, and the regex box is rewritten as you type.
+Only the prefixes change. If the regex had a digit count, such as `[0-9]{3,5}` for 3 to 5 digits, or `.*` around it, those stay.
+For `CEL, ICP6` on its own that is `(?P<item_id>(?:CEL|ICP6)-[0-9]+)`, which finds `ICP6-12` in `253_ICP6-12-1_4.ndax`.
+Nothing is saved until **Save patterns**.
+The prefix box shows the prefixes of the regex in the regex box, and is blank when that regex is written some other way. Typing prefixes then replaces it.
 
 Beside the boxes, a preview lists files from the chosen folder with the item ID each would get.
 Files that get none come first, in red.
@@ -59,7 +60,7 @@ Above the list, the distinct IDs found are shown in sort order, so a wrong one s
 The preview follows the boxes as you type, before you save.
 **Cancel** or Escape closes the window and drops what was not saved.
 
-For IDs that are not text plus a number, an AI assistant such as Claude or ChatGPT can write the regex.
+For IDs that are not a prefix, a dash and a number, an AI assistant such as Claude or ChatGPT can write the regex.
 Give it three file names and the ID in each, and ask for a Python regex with a named group `item_id`.
 Paste the answer into the regex box and check it in the preview.
 Assistants often get this kind of regex wrong, because the ID is only part of the name, so check every time.
