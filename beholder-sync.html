@@ -101,7 +101,6 @@ label input,label textarea{margin-top:2px} label input{font-size:14px}
    regex box gets the height of an input. */
 .grid label{display:flex;flex-direction:column;justify-content:space-between}
 .grid textarea{line-height:21px}
-.pair{display:flex;gap:6px;align-items:center} .pair button{white-space:nowrap}
 .preview td+td{white-space:nowrap}
 #log{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
  max-height:260px;overflow-y:auto;white-space:pre-wrap;margin:0}
@@ -158,7 +157,7 @@ const DEFAULT_WATCH = {
   itemType: "cells",
   include: "*.ndax",
   exclude: "",
-  idPattern: ".*(?P<item_id>CEL-[0-9]{3,5}).*",
+  idPattern: ".*(?P<item_id>CEL-[0-9]+).*",
   itemTemplate: "{item_id}",
   collectionTemplate: "",
   blockPatterns: "*.ndax=cycle",
@@ -368,11 +367,28 @@ function idsFor(cfg, relPath, warn = (msg) => log(msg, "warn")) {
   }
 }
 
-// Writes an item ID regex from one example ID: each run of digits matches
-// any number of digits, and the rest is matched as typed. Beholder searches
-// the path for the regex, so it needs no ".*" around it.
-const idRegexFromExample = (ex) => "(?P<item_id>" + ex.trim().split(/(\d+)/)
-  .map((p, i) => i % 2 ? "[0-9]+" : p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("") + ")";
+// Item IDs are usually a short prefix, a dash and a number, such as CEL-081
+// or ICP6-12. The prefix box lists the prefixes and writes the regex from
+// them. Only the prefixes change: a regex the box can read keeps its digit
+// count and any ".*" around it, and any other gets a dash and any number of
+// digits. Beholder searches the path for the regex, so it needs no ".*".
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const PLAIN_ID = { lead: "", digits: "-[0-9]+", trail: "" };
+const idRegexFromPrefixes = (prefixes, { lead, digits, trail } = PLAIN_ID) => {
+  const alt = prefixes.map(escapeRe).join("|");
+  return `${lead}(?P<item_id>${prefixes.length > 1 ? `(?:${alt})` : alt}${digits})${trail}`;
+};
+// Returns {prefixes, around} for a regex the prefix box could have written,
+// and null for any other, such as one written by hand or several lines.
+function prefixesOfRegex(re) {
+  re = re.trim();
+  const m = re.match(/^(\.\*)?\(\?P<item_id>(.+)(-\[0-9\](?:\+|\{\d+(?:,\d*)?\}))\)(\.\*)?$/);
+  if (!m) return null;
+  const prefixes = m[2].replace(/^\(\?:(.*)\)$/, "$1").split("|").map((p) => p.replace(/\\(.)/g, "$1"));
+  const around = { lead: m[1] || "", digits: m[3], trail: m[4] || "" };
+  return idRegexFromPrefixes(prefixes, around) === re ? { prefixes, around } : null;
+}
+const splitPrefixes = (text) => [...new Set(splitList(text))];
 
 // ------------------------------------------------------------------- scan
 async function* walk(dir, cfg, prefix = "", depth = 0) {
@@ -675,14 +691,14 @@ const WATCH_INPUTS = [
   ["exclude", "Exclude patterns (comma separated)"],
   ["maxDepth", "Max folder depth (blank for unlimited)", "number"],
   ["idPattern", "Item ID regexes, one per line (named group <code>item_id</code>)", "textarea"],
-  ["example", "Or build the regex from an example item ID", "example"],
+  ["prefixes", "Item ID prefixes, comma separated (writes the regex)", "prefixes"],
   ["itemTemplate", "Item ID template"],
   ["collectionTemplate", "Collection ID template (blank for none)"],
   ["blockPatterns", "Block patterns (<code>glob=blocktype</code>, comma separated)"],
 ].map(([k, label, kind]) => `<label><span>${label}</span>${kind === "textarea"
   ? `<textarea name="${k}" rows="1" spellcheck="false"></textarea>`
-  : kind === "example"
-  ? `<span class="pair"><input name="${k}" placeholder="CEL-081" spellcheck="false"><button data-act="example">Build regex</button></span>`
+  : kind === "prefixes"
+  ? `<input name="${k}" placeholder="CEL, ICP, ICP6, APC2" spellcheck="false">`
   : `<input name="${k}"${kind === "number" ? ' type="number" min="0"' : ""}>`}</label>`).join("");
 function buildCards() {
   if (!watches.length) {
@@ -1035,29 +1051,13 @@ const actions = {
   // or Escape do not come back.
   async edit(w, card) {
     for (const k of WATCH_FIELDS) card.querySelector(`[name=${k}]`).value = w[k];
-    card.querySelector("[name=example]").value = "";
+    showPrefixes(card);
     card.querySelector(".dlgerr").textContent = "";
     card.querySelector(".edit h2").textContent = `Edit patterns for ${w.name}`;
     card.querySelector(".edit").showModal();
     await preview(card);
   },
   async cancel(w, card) { card.querySelector(".edit").close(); },
-  async example(w, card) {
-    const ex = card.querySelector("[name=example]").value;
-    if (!ex.trim()) return;
-    // Digits alone become [0-9]+, which takes the first number anywhere in
-    // the path, such as a channel number. Letters alone match one fixed
-    // string, so every file would go to one item. Either makes wrong items.
-    const msg = card.querySelector(".dlgerr");
-    if (!/[a-z]/i.test(ex) || !/\d/.test(ex)) {
-      msg.textContent = "The example needs letters and a number, such as CEL-081, for the page to find " +
-        "IDs like it in file names. For any other kind of ID, write the regex by hand.";
-      return;
-    }
-    msg.textContent = "";
-    card.querySelector("[name=idPattern]").value = idRegexFromExample(ex);
-    await preview(card);
-  },
   async pick(w) {
     let handle;
     // The browser remembers the last folder picked under each id, and that
@@ -1100,10 +1100,24 @@ $("watches").addEventListener("click", (e) => {
   actions[b.dataset.act](watchOf(card.dataset.id), card)
     .catch((err) => { log(`${b.textContent} failed: ${err.message}`, "bad"); setProblem(`${b.textContent} failed: ${err.message}`); });
 });
-// The preview follows the edit form as it is typed in.
+// The prefix box shows the prefixes of the regex box, and is blank when the
+// regex is not one it could have written.
+function showPrefixes(card) {
+  const found = prefixesOfRegex(card.querySelector("[name=idPattern]").value);
+  card.querySelector("[name=prefixes]").value = found ? found.prefixes.join(", ") : "";
+}
+// Typing prefixes rewrites the regex box, and typing a regex updates the
+// prefix box. The preview follows the edit form as it is typed in.
 $("watches").addEventListener("input", (e) => {
   const card = e.target.closest(".watch");
-  if (card && e.target.closest(".edit") && e.target.name !== "example") previewSoon(card);
+  if (!card || !e.target.closest(".edit")) return;
+  if (e.target.name === "prefixes") {
+    const prefixes = splitPrefixes(e.target.value);
+    const regex = card.querySelector("[name=idPattern]");
+    if (prefixes.length) regex.value = idRegexFromPrefixes(prefixes, prefixesOfRegex(regex.value)?.around);
+  }
+  if (e.target.name === "idPattern") showPrefixes(card);
+  previewSoon(card);
 });
 $("addWatch").onclick = async () => {
   let n = watches.length + 1;
@@ -1264,7 +1278,7 @@ const windowsPathHint = (skipped) => skipped.some((k) => /escape sequence|hexade
 })();
 // Exposed for the test harness, which drives a sync against a folder it builds.
 window.beholder = { useFolder, syncOnce, filesAll, compileSettings, idsFor, globToRegex, settingsFromConfig,
-                    loadYamlLenient, folderHints, folderWarning,
+                    loadYamlLenient, folderHints, folderWarning, idRegexFromPrefixes, prefixesOfRegex,
                     watchId: (name) => watches.find((w) => w.name === name)?.id, settings: () => global };
 </script>
 </body>
